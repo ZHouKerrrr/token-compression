@@ -1,4 +1,4 @@
-"""Real Integration Test with Qwen2.5-VL Model
+/data2/youneng/datas/Visual-CoT/"""Real Integration Test with Qwen2.5-VL Model
 
 This script tests PATO integration with the actual Qwen2.5-VL model.
 """
