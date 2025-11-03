@@ -10,6 +10,9 @@ Each method implements the BaseTokenSorter interface and focuses on
 learning optimal token ordering for prefix selection.
 """
 
+# Import base classes first
+from .base import BaseTokenSorter, register_token_sort, get_token_sort_class
+
 # Import all token sort methods to trigger registration
 from . import softsort
 from . import gatingsort
@@ -25,9 +28,9 @@ except ImportError:
 # Import the specific classes to make them available
 from .softsort import DifferentiableSortingTokenSorter
 try:
-    from .gatingsort import GatingTokenSorter
+    from .gatingsort import RandomGatingTokenSorter
 except ImportError:
-    GatingTokenSorter = None
+    RandomGatingTokenSorter = None
 
 if multi_dist_module is not None:
     try:
@@ -38,13 +41,16 @@ else:
     MultiDistillationTokenSorter = None
 
 __all__ = [
+    "BaseTokenSorter",
+    "register_token_sort",
+    "get_token_sort_class",
     "softsort",
     "gatingsort", 
     "multi_distillation",
     "DifferentiableSortingTokenSorter",
 ]
 
-if GatingTokenSorter is not None:
-    __all__.append("GatingTokenSorter")
+if RandomGatingTokenSorter is not None:
+    __all__.append("RandomGatingTokenSorter")
 if MultiDistillationTokenSorter is not None:
     __all__.append("MultiDistillationTokenSorter")

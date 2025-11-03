@@ -38,7 +38,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ..base import BaseTokenSorter
+from .base import BaseTokenSorter
 
 
 class RandomGatingTokenSorter(BaseTokenSorter):

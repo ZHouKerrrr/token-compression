@@ -1,0 +1,54 @@
+{
+  "samples": [
+    {
+      "image": "demo_image_0000.jpg",
+      "question": "How many cats are in the image?",
+      "answer": "one"
+    },
+    {
+      "image": "demo_image_0001.jpg",
+      "question": "Where is the tree located?",
+      "answer": "left"
+    },
+    {
+      "image": "demo_image_0002.jpg",
+      "question": "What is the cat doing?",
+      "answer": "eating"
+    },
+    {
+      "image": "demo_image_0003.jpg",
+      "question": "What is the bird doing?",
+      "answer": "sleeping"
+    },
+    {
+      "image": "demo_image_0004.jpg",
+      "question": "What color is the person?",
+      "answer": "green"
+    },
+    {
+      "image": "demo_image_0005.jpg",
+      "question": "How many cats are in the image?",
+      "answer": "four"
+    },
+    {
+      "image": "demo_image_0006.jpg",
+      "question": "Is there a person in the image?",
+      "answer": "yes"
+    },
+    {
+      "image": "demo_image_0007.jpg",
+      "question": "Where is the house located?",
+      "answer": "right"
+    },
+    {
+      "image": "demo_image_0008.jpg",
+      "question": "Is there a flower in the image?",
+      "answer": "yes"
+    },
+    {
+      "image": "demo_image_0009.jpg",
+      "question": "Is there a car in the image?",
+      "answer": "yes"
+    }
+  ]
+}

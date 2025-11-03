@@ -12,6 +12,9 @@ Each method implements the BaseGRaw interface and focuses on query-conditional
 pixel domain precompression to generate information-dense smaller images.
 """
 
+# Import base classes first
+from .base import BaseGRaw, register_graw, get_graw_class, RegularizationUtils
+
 # Import all g_raw methods to trigger registration
 from . import weighted_downsample
 
@@ -19,6 +22,10 @@ from . import weighted_downsample
 from .weighted_downsample import WeightedDownsample
 
 __all__ = [
+    "BaseGRaw",
+    "register_graw",
+    "get_graw_class",
+    "RegularizationUtils",
     "weighted_downsample",
     "WeightedDownsample",
 ]

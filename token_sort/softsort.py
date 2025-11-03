@@ -37,7 +37,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
-from ..base import BaseTokenSorter, register_token_sort
+from .base import BaseTokenSorter, register_token_sort
 
 
 @register_token_sort("A")

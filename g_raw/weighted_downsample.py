@@ -22,15 +22,13 @@ import torch.nn.functional as F
 
 # Import base classes and utilities
 try:
-    from ..base import BaseGRaw, register_graw
-    from ..utils import VisionUtils, MathUtils, RegularizationUtils
+    from .base import BaseGRaw, register_graw, RegularizationUtils
 except ImportError:
     # For standalone testing
     import sys
     import os
     sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from base import BaseGRaw, register_graw
-    from utils import VisionUtils, MathUtils, RegularizationUtils
+    from base import BaseGRaw, register_graw, RegularizationUtils
 
 
 class LightCNN(nn.Module):
