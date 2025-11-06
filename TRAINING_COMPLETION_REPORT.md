@@ -1,4 +1,4 @@
-# PATO Training Pipeline 完成报告
+# PATO Training Pipeline 
 
 ## 🎉 本次完成 (2025-11-03)
 

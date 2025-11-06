@@ -90,7 +90,7 @@ class PATOQwen2_5_VisionTransformer(Qwen2_5_VisionTransformerPretrainedModel):
             token_sort_class = get_token_sort_class(pato_config.token_sort.mode)
             context = {
                 'hidden_size': config.hidden_size,  # Vision encoder hidden size
-                'device': 'cpu',  # Will be moved to correct device later
+                'device': None,  # Will be inferred dynamically in forward
             }
             self.token_sorter = token_sort_class(pato_config.token_sort, context)
         else:
@@ -105,8 +105,8 @@ class PATOQwen2_5_VisionTransformer(Qwen2_5_VisionTransformerPretrainedModel):
                 dropout=pato_config.projector.dropout
             )
         else:
-            # Keep original merger for now
-            self.projector = self.merger
+            # Keep original merger for now (safely handle if merger doesn't exist)
+            self.projector = getattr(self, 'merger', None)
     
     def forward(
         self,
@@ -271,12 +271,16 @@ class PATOQwen2_5_VisionTransformer(Qwen2_5_VisionTransformerPretrainedModel):
         # ============================================================
         # Step 4: Simplified Projector (NEW - PATO)
         # ============================================================
-        if hasattr(self, 'projector') and self.projector is not self.merger:
+        merger = getattr(self, 'merger', None)
+        if hasattr(self, 'projector') and self.projector is not merger:
             # Use simplified projector
             image_embeds = self.projector(vision_tokens)  # [B, M, hidden_dim]
         else:
             # Use original merger
-            image_embeds = self.merger(vision_tokens)
+            if merger is not None:
+                image_embeds = merger(vision_tokens)
+            else:
+                raise RuntimeError("Neither projector nor merger is available")
         
         if self.training and aux_outputs:
             return image_embeds, aux_outputs
@@ -303,7 +307,7 @@ class PATOQwen2_5_VLModel(Qwen2_5_VLModel):
         if config.pato_config.g_raw.enable:
             g_raw_class = get_graw_class(config.pato_config.g_raw.mode)
             context = {
-                'device': 'cpu',  # Will be moved later
+                'device': None,  # Will be inferred dynamically in forward
             }
             self.g_raw = g_raw_class(config.pato_config.g_raw, context)
         else:

@@ -273,18 +273,3 @@ Token Sort → selected [M, 3584]
 - **可用性**: ✅ Production Ready (框架)
 
 ---
-
-## 🙏 致谢
-
-- Qwen团队: 优秀的Qwen2.5-VL基础模型
-- PATO方法: 创新的压缩优化思路
-- PyTorch生态: 强大的深度学习支持
-
----
-
-## 📞 联系方式
-
-如有问题或建议，请联系项目维护者。
-
-**项目状态**: ✅ V1.0 MVP Complete, Ready for Training
-**最后更新**: 2025-11-03
