@@ -9,8 +9,8 @@ echo "PATO Large-Scale Training"
 echo "========================================"
 
 # 配置
-IMAGE_DIR="/data2/youneng/datas/Visual-CoT/cot_images_tar_split/cot_image_data"
-ANNOTATION_FILE="/data2/youneng/datas/Visual-CoT/cot_images_tar_split/cot_image_data/textvqa_cot_train.jsonl"
+IMAGE_DIR="./datas/cot/textvqa"
+ANNOTATION_FILE="./datas/metadata/textvqa_cot_train.jsonl"
 SAVE_DIR="./checkpoints_large_scale"
 LOG_DIR="./logs"
 
@@ -22,7 +22,7 @@ LEARNING_RATE=1e-4
 NUM_WORKERS=8
 
 # GPU设置 (使用多个空闲GPU)
-GPUS="3,1,6"  # cuda:3, cuda:1, cuda:6
+GPUS="2,3"  # cuda:3, cuda:1, cuda:6
 
 # Token设置
 TEXT_DIM=3584
@@ -59,7 +59,7 @@ mkdir -p "$LOG_DIR"
 echo "Starting training..."
 echo ""
 
-conda run -n qwen python training/train_large_scale.py \
+python training/train_large_scale.py \
     --image_dir "$IMAGE_DIR" \
     --annotation_file "$ANNOTATION_FILE" \
     --max_samples $MAX_SAMPLES \

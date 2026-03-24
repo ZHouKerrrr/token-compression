@@ -153,6 +153,9 @@ class CompletePATOPipeline(nn.Module):
                 query_embeddings=text_embeddings
             )
         
+        #step 7: Language model decoding (optional, not implemented here)
+        
+
         intermediates['selected_tokens'] = selected_tokens
         intermediates['sort_indices'] = sort_indices
         

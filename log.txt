@@ -1,0 +1,40 @@
+  3%|███████▏                                                                                                                                                                                                                                                | 72/2500 [08:11<4:18:18,  6.38s/it]Traceback (most recent call last):
+  File "/data1/home/jfzhou/PATO/training/train_qwen_pato.py", line 361, in <module>
+    main()
+  File "/data1/home/jfzhou/PATO/training/train_qwen_pato.py", line 345, in main
+    trainer.train()
+  File "/data1/home/jfzhou/anaconda3/envs/qwen/lib/python3.10/site-packages/transformers/trainer.py", line 2245, in train
+    return inner_training_loop(
+  File "/data1/home/jfzhou/anaconda3/envs/qwen/lib/python3.10/site-packages/transformers/trainer.py", line 2560, in _inner_training_loop
+    tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
+  File "/data1/home/jfzhou/anaconda3/envs/qwen/lib/python3.10/site-packages/transformers/trainer.py", line 3736, in training_step
+    loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+  File "/data1/home/jfzhou/PATO/training/train_qwen_pato.py", line 171, in compute_loss
+    outputs = model(
+  File "/data1/home/jfzhou/anaconda3/envs/qwen/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/data1/home/jfzhou/anaconda3/envs/qwen/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/data1/home/jfzhou/anaconda3/envs/qwen/lib/python3.10/site-packages/accelerate/utils/operations.py", line 819, in forward
+    return model_forward(*args, **kwargs)
+  File "/data1/home/jfzhou/anaconda3/envs/qwen/lib/python3.10/site-packages/accelerate/utils/operations.py", line 807, in __call__
+    return convert_to_fp32(self.model_forward(*args, **kwargs))
+  File "/data1/home/jfzhou/anaconda3/envs/qwen/lib/python3.10/site-packages/torch/amp/autocast_mode.py", line 44, in decorate_autocast
+    return func(*args, **kwargs)
+  File "/data1/home/jfzhou/PATO/pato_integration/pato_model.py", line 562, in forward
+    position_ids, rope_deltas = self.get_rope_index(
+  File "/data1/home/jfzhou/anaconda3/envs/qwen/lib/python3.10/site-packages/transformers/models/qwen2_5_vl/modeling_qwen2_5_vl.py", line 1660, in get_rope_index
+    position_ids[..., i, attention_mask[i] == 1] = llm_positions.to(position_ids.device)
+RuntimeError: shape mismatch: value tensor of shape [3, 79] cannot be broadcast to indexing result of shape [3, 76]
+  3%|███████▏                                                                                                                                                                                                                                                | 72/2500 [08:15<4:38:31,  6.88s/it]
+Traceback (most recent call last):
+  File "/data1/home/jfzhou/anaconda3/envs/qwen/bin/accelerate", line 7, in <module>
+    sys.exit(main())
+  File "/data1/home/jfzhou/anaconda3/envs/qwen/lib/python3.10/site-packages/accelerate/commands/accelerate_cli.py", line 50, in main
+    args.func(args)
+  File "/data1/home/jfzhou/anaconda3/envs/qwen/lib/python3.10/site-packages/accelerate/commands/launch.py", line 1235, in launch_command
+    simple_launcher(args)
+  File "/data1/home/jfzhou/anaconda3/envs/qwen/lib/python3.10/site-packages/accelerate/commands/launch.py", line 823, in simple_launcher
+    raise subprocess.CalledProcessError(returncode=process.returncode, cmd=cmd)
+subprocess.CalledProcessError: Command '['/data1/home/jfzhou/anaconda3/envs/qwen/bin/python3.10', 'training/train_qwen_pato.py', '--config', 'train_configs/qwen2_5_3b_pato/qwen2_5_3b_pato.yaml']' returned non-zero exit status 1.
+Training failed for config: train_configs/qwen2_5_3b_pato/qwen2_5_3b_pato.yaml

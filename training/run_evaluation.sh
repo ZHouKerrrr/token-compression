@@ -9,7 +9,7 @@ echo "========================================"
 
 # 配置
 CHECKPOINT="./checkpoints_large_scale/best_model.pt"
-IMAGE_DIR="/data2/youneng/datas/Visual-CoT/cot_images_tar_split/cot_image_data/textvqa"
+IMAGE_DIR="./datas/cot/textvqa"
 BATCH_SIZE=4
 NUM_SAMPLES=500
 DEVICE="cuda:3"

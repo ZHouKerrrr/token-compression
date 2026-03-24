@@ -11,7 +11,7 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from configuration_qwen2_5_vl import Qwen2_5_VLConfig
+from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import Qwen2_5_VLConfig
 
 
 @dataclass
@@ -26,8 +26,8 @@ class GRawConfig:
     target_size: Tuple[int, int] = (448, 448)
     
     # Feature dimensions
-    text_dim: int = 3584  # Qwen2.5-VL language model hidden size
-    vision_dim: int = 256  # LightCNN feature dimension
+    text_hidden_size: int = 2048  # Qwen2.5-VL language model hidden size
+    vision_hidden_size: int = 1280  # LightCNN feature dimension
     
     # Network architecture
     density_hidden_dim: int = 256
@@ -48,21 +48,17 @@ class TokenSortConfig:
     
     # General settings
     enable: bool = True
-    mode: str = 'A'  # Method A: Differentiable Sorting
-    
-    # Budget settings
-    budgets: Union[int, List[int]] = field(default_factory=lambda: [256])
-    budget_min: int = 128
-    budget_max: int = 512
-    random_budget_training: bool = True  # Random budget during training
-    
+    mode: str = 'hard_token_sorter'  
+    # Method hard_token_sorter: Hard token pruned by scores
+    token_threshold: float = 0.5
+    score_threshold: float = 0
+
+    tau_init: float = 1.0 # tau of softmax in rate_loss
+    tau_min: float = 0.05
+    tau_decay: str = 'linear'  # 'linear' or 'exponential'
+
     # Ranker network
     scorer_hidden_dim: int = 256
-    
-    # Temperature (for differentiable sorting)
-    tau_init: float = 1.0
-    tau_final: float = 0.1
-    tau_decay: str = 'linear'  # 'linear' or 'exponential'
     
     # Regularization
     lambda_entropy: float = 1e-3
@@ -75,14 +71,15 @@ class TokenSortConfig:
 @dataclass
 class ProjectorConfig:
     """Configuration for Visual Projector"""
-    
+    # General settings
+    enable: bool = True
     # Projector type
     mode: str = 'A'  # A: Simplified Linear, B: Grid Reconstruction
     
     # Feature dimensions
-    vision_dim: int = 1152  # Vision encoder output dim
-    hidden_dim: int = 3584  # LLM hidden dim
-    
+    vision_hidden_size: int = 1280  # Vision encoder output dim
+    hidden_size: int = 2048  # LLM hidden dim
+
     # Dropout
     dropout: float = 0.1
 
@@ -100,6 +97,8 @@ class PATOConfig:
     lambda_distill: float = 0.05  # Feature distillation
     lambda_contrast: float = 0.1  # Contrastive loss (query pairs)
     lambda_sort_reg: float = 0.01  # Token sort regularization
+    lambda_rate: float = 0.3 # ratio of Rate Loss of token sort
+    lambda_distortion: float = 2.0 # Distortion of main mission
     
     # Training strategy
     freeze_vision_encoder: bool = True
@@ -109,6 +108,8 @@ class PATOConfig:
     # Gradient checkpointing
     use_gradient_checkpointing: bool = False
 
+    # eval and skip LLM
+    evaluate: bool = False
 
 class PATOQwen2_5_VLConfig(Qwen2_5_VLConfig):
     """Extended Qwen2.5-VL configuration with PATO parameters"""
@@ -120,17 +121,15 @@ class PATOQwen2_5_VLConfig(Qwen2_5_VLConfig):
         pato_config: Optional[PATOConfig] = None,
         **kwargs
     ):
-        super().__init__(**kwargs)
-        
         # Initialize PATO config
         if pato_config is None:
-            self.pato_config = PATOConfig()
+            self.pato_config = create_default_pato_config(**kwargs)
         elif isinstance(pato_config, dict):
             # Convert dict to dataclass
             self.pato_config = self._dict_to_pato_config(pato_config)
         else:
             self.pato_config = pato_config
-    
+        super().__init__(**kwargs)
     @staticmethod
     def _dict_to_pato_config(config_dict: dict) -> PATOConfig:
         """Convert dictionary to PATOConfig dataclass"""
@@ -157,7 +156,13 @@ class PATOQwen2_5_VLConfig(Qwen2_5_VLConfig):
             projector=projector_config,
             **main_params
         )
-    
+    def _base_config(self):
+        """Get base Qwen2.5-VL config without PATO params"""
+        base_dict = self.to_dict()
+        # Remove PATO-specific entries
+        base_dict.pop('pato_config', None)
+        base_config = Qwen2_5_VLConfig(**base_dict)
+        return base_config
     def to_dict(self):
         """Override to include PATO config"""
         output = super().to_dict()
@@ -186,7 +191,7 @@ class PATOQwen2_5_VLConfig(Qwen2_5_VLConfig):
 
 
 # Helper functions
-def create_default_pato_config(**kwargs) -> PATOQwen2_5_VLConfig:
+def create_default_pato_qwen_config(**kwargs) -> PATOQwen2_5_VLConfig:
     """Create a default PATO-Qwen2.5-VL configuration
     
     Args:
@@ -197,6 +202,24 @@ def create_default_pato_config(**kwargs) -> PATOQwen2_5_VLConfig:
     """
     return PATOQwen2_5_VLConfig(**kwargs)
 
+# Helper function
+def create_default_pato_config(**kwargs) -> PATOConfig:
+    """Create a default PATO configuration
+    
+    Args:
+        **kwargs: Override parameters
+        
+    Returns:
+        PATOConfig instance
+    """
+    config = PATOConfig()
+    # Special parameters
+    # Apply overrides
+    for key, value in kwargs.items():
+        if hasattr(config, key):
+            setattr(config, key, value)
+    
+    return config
 
 if __name__ == "__main__":
     # Test configuration

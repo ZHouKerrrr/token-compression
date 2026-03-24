@@ -2,8 +2,8 @@
 
 支持 VQAv2 和 TextVQA 数据集的加载和预处理。
 """
-
 import os
+
 import json
 from typing import Dict, List, Optional, Tuple, Union
 from pathlib import Path
@@ -12,7 +12,25 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import torchvision.transforms as T
+from transformers import AutoProcessor
+from qwen_vl_utils import process_vision_info
+# ---------- Datasets ----------
 
+
+QUERY_KEY = "query"
+IMG_PATH_KEY = "img_path"
+ANSWER_KEY = "answer"
+NORMED_BBOXES_KEY = "normed_bboxes"
+SCORE_FUNCS_KEY = "score_funcs"
+
+
+REMAIN_KEYS = [
+    QUERY_KEY,
+    IMG_PATH_KEY,
+    NORMED_BBOXES_KEY,
+    ANSWER_KEY,
+    SCORE_FUNCS_KEY,
+]
 
 class VQADataset(Dataset):
     """VQA Dataset for PATO Training
@@ -63,8 +81,13 @@ class VQADataset(Dataset):
         
         # 读取JSON文件
         with open(self.data_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
+            data = []
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                data.append(json.loads(line))
+        # 这里需要读取JSONL文件
         # 根据数据集类型解析
         if self.dataset_type == 'vqav2':
             return self._parse_vqav2(data)
@@ -219,7 +242,6 @@ class VQADataset(Dataset):
                 return_tensors="pt",
                 padding=True
             )
-            
             # 构建返回字典
             result = {
                 'pixel_values': inputs['pixel_values'].squeeze(0),
@@ -255,7 +277,7 @@ class VQADataset(Dataset):
 
 def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
     """自定义 collate 函数，处理变长序列
-    
+    但是collate_fn存在局限性，不能实现参数传入
     Args:
         batch: List of samples from dataset
     
@@ -414,12 +436,33 @@ def create_demo_dataset(
     print(f"Created demo dataset with {num_samples} samples at {output_path}")
     return output_path
 
-
+def test_dataloader():
+    """测试数据加载器"""
+    MODEL_PATH="./Qwen/Qwen2.5-VL-3B-Instruct"
+    DATA_PATH="./datas/metadata/textvqa_cot_train.jsonl"
+    IMAGE_DIR="./datas/cot/textvqa"  # 需要创建对应的图像
+    SAVE_DIR="./checkpoints/pato_qwen2_5_vl"
+    MAX_SAMPLES=10  # 快速测试，只使用10个样本
+    processor = AutoProcessor.from_pretrained(MODEL_PATH)
+    dataloader = create_vqa_dataloader(
+        data_path=DATA_PATH,
+        image_dir=IMAGE_DIR,
+        processor=processor,
+        batch_size=2,
+        max_samples=MAX_SAMPLES,
+        dataset_type='textvqa'
+    )
+    for batch in dataloader:
+        print(batch)
+        print(batch['pixel_values'].shape)
+        break  # 只打印第一个batch
 if __name__ == "__main__":
+    os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 设置工作目录到 PATO 根目录
     # 测试代码
     print("VQA Dataset Loader Test")
     print("=" * 60)
-    
+    # 配置
+    test_dataloader()
     # 创建演示数据集
     demo_data_path = create_demo_dataset(num_samples=10)
     

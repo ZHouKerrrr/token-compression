@@ -6,23 +6,26 @@
 3. 使用知识蒸馏损失保持性能
 4. 添加预算正则化确保压缩效率
 """
-
 import os
 import sys
 import argparse
 from pathlib import Path
 from typing import Optional
 import json
-
+# 添加项目路径
+sys.path.insert(0, str(Path(__file__).parent.parent))
+os.chdir("/data1/home/jfzhou/PATO")
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from transformers import AutoProcessor, AutoModelForVision2Seq
 from tqdm import tqdm
+from pato_integration import PATOQwen2_5_VLModel, PATOQwen2_5_VLConfig
+from pato_integration.pato_config_standalone import PATOConfig
+from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration, Qwen2_5_VLConfig
 
-# 添加项目路径
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from g_raw import WeightedDownsample
 from token_sort import DifferentiableSortingTokenSorter
@@ -45,49 +48,40 @@ class PATOTrainer:
         self,
         model_path: str,
         config: dict,
-        device: str = 'cuda'
+        device: str = 'cuda',
+        dtype: torch.dtype = torch.float16,
     ):
         self.model_path = model_path
         self.config = config
         self.device = device
+        self.model_dtype = dtype
         
         print("="*60)
         print("PATO-Qwen2.5-VL Trainer Initialization")
         print("="*60)
         
         # 加载基础模型和processor
-        print(f"\n[1/5] Loading Qwen2.5-VL model from {model_path}")
-        self.processor = AutoProcessor.from_pretrained(
-            model_path,
-            trust_remote_code=True
-        )
-        self.base_model = AutoModelForVision2Seq.from_pretrained(
-            model_path,
-            torch_dtype=torch.float16,
-            device_map=device,
-            trust_remote_code=True
-        )
+        print(f"\n[1/5] Initializing base model and processor")
+        self._init_model()
+        if self.model.model is not None and self.model.model.get_input_embeddings() is not None:
+            print("Model initialized.")
+        else:
+            raise ValueError("Model initialization failed.")
         print(f"  ✓ Model loaded on {device}")
-        
-        # 冻结基础模型
-        print(f"\n[2/5] Freezing base model parameters")
-        for param in self.base_model.parameters():
-            param.requires_grad = False
-        print(f"  ✓ Base model frozen")
-        
-        # 初始化PATO组件
-        print(f"\n[3/5] Initializing PATO components")
-        self._init_pato_components()
-        
+
         # 初始化损失函数
-        print(f"\n[4/5] Initializing loss functions")
+        print(f"\n[3/5] Initializing loss functions")
         self.criterion = PATOLoss(
-            distill_weight=config.get('distill_weight', 0.5),
-            budget_weight=config.get('budget_weight', 0.3),
-            diversity_weight=config.get('diversity_weight', 0.2)
+            lambda_distill=config.get('lambda_distill', 0.05),
+            lambda_sort_reg=config.get('lambda_sort_reg', 0.01),
+            lambda_contrast=config.get('lambda_contrast', 0.1),
+            lambda_g_raw_reg=config.get('lambda_g_raw_reg', 0.001)
         )
         print(f"  ✓ Loss initialized")
-        
+        # 初始化损失函数
+        print(f"\n[4/5] Initializing optimizer")
+        self.criterion = PATOLoss()
+            
         # 初始化优化器
         print(f"\n[5/5] Initializing optimizer")
         self._init_optimizer()
@@ -99,7 +93,65 @@ class PATOTrainer:
         
         print(f"\n✓ Trainer initialized successfully!")
         print(f"  Trainable parameters: {self._count_trainable_params()/1e6:.2f}M")
-    
+
+    def _init_model(self):
+        """ Initialize base model and processor """
+
+        self.processor = AutoProcessor.from_pretrained(
+            self.model_path,
+            trust_remote_code=True,
+            use_fast=True # 建议加上
+        )
+        """Load pretrained model with PATO enhancements"""
+        base_model_config = Qwen2_5_VLConfig.from_pretrained(self.model_path)
+        pato_config = PATOConfig()
+        pato_config.g_raw.text_dim = (base_model_config.text_config.hidden_size 
+                                 if hasattr(base_model_config, 'text_config') 
+                                 else base_model_config.hidden_size)
+        print("Initializing PATO model...")
+        config = PATOQwen2_5_VLConfig(
+                pato_config=pato_config,
+                device=self.device,
+                **base_model_config.to_dict(),
+            )
+        self.model = PATOQwen2_5_VLModel(
+            config=config,
+        ).to(self.device)
+        print("Done!")
+
+        # print("Loading language model and vision transformer weights...")
+        # #Load weights from base model
+        # base_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        #     pretrained_model_name_or_path=self.model_path,
+        #     config=base_model_config,
+        #     device_map="cpu", # 强制放在 CPU，避免挤爆显存
+        #     torch_dtype=self.model_dtype,
+        # )
+        # print("Done!")
+        # print("Loading base model weights into PATO model...")
+        # missing_lm, unexpected_lm = self.model.model.load_state_dict(
+        #     base_model.model.state_dict(), strict=False
+        # )
+        # missing_vis, unexpected_vis = self.model.visual.load_state_dict(
+        #     base_model.visual.state_dict(), strict=False
+        # )
+        # TODO lm_head for losses
+        # print("   LM missing:", missing_lm)
+        # print("   LM unexpected:", unexpected_lm)
+        # print("   VIS missing:", missing_vis)
+        # print("   VIS unexpected:", unexpected_vis)
+        # print("Done!")
+        # del base_model
+        # torch.cuda.empty_cache()
+        print(f"\n[2/4] Freezing base model parameters")
+        self.model.model.requires_grad_(False)
+        self.model.visual.requires_grad_(False)
+
+        # 只训练 PATO 模块
+        self.model.g_raw.requires_grad_(True)
+        self.model.visual.token_sorter.requires_grad_(True)
+        self.model.visual.projector.requires_grad_(True)
+        print(f"  ✓ Base model frozen")
     def _init_pato_components(self):
         """初始化PATO组件"""
         # 直接加载配置模块
@@ -136,9 +188,10 @@ class PATOTrainer:
         # 所以token_sorter需要使用text_hidden_size
         self.token_sorter = DifferentiableSortingTokenSorter(
             pato_config.token_sort,
-            {'hidden_size': text_hidden_size}  # 使用text维度
+            {'hidden_size': vision_hidden_size}  # 使用text维度
         ).to(self.device)
         
+
         # 简化的投影器（如果需要）
         self.projector = nn.Linear(
             text_hidden_size,
@@ -153,9 +206,9 @@ class PATOTrainer:
         """初始化优化器"""
         # 收集所有可训练参数
         trainable_params = []
-        trainable_params += list(self.g_raw.parameters())
-        trainable_params += list(self.token_sorter.parameters())
-        trainable_params += list(self.projector.parameters())
+        trainable_params += list(self.model.g_raw.parameters())
+        trainable_params += list(self.model.visual.token_sorter.parameters())
+        trainable_params += list(self.model.visual.projector.parameters())
         
         # 过滤requires_grad=True的参数
         trainable_params = [p for p in trainable_params if p.requires_grad]
@@ -180,7 +233,7 @@ class PATOTrainer:
     def _count_trainable_params(self) -> int:
         """统计可训练参数数量"""
         total = 0
-        for module in [self.g_raw, self.token_sorter, self.projector]:
+        for module in [self.model.g_raw, self.model.visual.token_sorter, self.model.visual.projector]:
             total += sum(p.numel() for p in module.parameters() if p.requires_grad)
         return total
     
@@ -188,7 +241,7 @@ class PATOTrainer:
         self,
         images: torch.Tensor,
         text_embeddings: torch.Tensor,
-        budget: int
+
     ):
         """PATO完整前向传播
         
@@ -201,25 +254,7 @@ class PATOTrainer:
             compressed_tokens: 压缩后的视觉token
             aux_outputs: 辅助输出（用于损失计算）
         """
-        # Step 1: g_raw 图像压缩
-        compressed_images = self.g_raw(images, text_embeddings)
-        
-        # Step 2: 通过processor处理压缩图像
-        # 注意: 这里需要将tensor转回PIL Image
-        # 为简化，我们直接使用base_model的visual encoder
-        
-        # Step 3: Vision encoding (使用冻结的encoder)
-        with torch.no_grad():
-            # 这里需要通过processor，实际训练中需要更仔细处理
-            # 暂时使用简化流程
-            pass
-        
-        # Step 4: Token sorting
-        # 在实际实现中，这里应该使用vision encoder的输出
-        # 为演示目的，我们使用模拟的vision tokens
-        
-        # 返回压缩结果和辅助输出
-        return None, {}
+        raise NotImplementedError("NotImplementedError: forward_pato_pipeline needs to be implemented.")
     
     def train_epoch(
         self,
@@ -235,9 +270,9 @@ class PATOTrainer:
         Returns:
             训练统计信息
         """
-        self.g_raw.train()
-        self.token_sorter.train()
-        self.projector.train()
+        self.model.g_raw.train()
+        self.model.visual.token_sorter.train()
+        self.model.visual.projector.train()
         
         total_loss = 0.0
         total_distill_loss = 0.0
@@ -245,29 +280,43 @@ class PATOTrainer:
         
         progress_bar = tqdm(dataloader, desc=f"Epoch {epoch}")
         
-        for batch_idx, batch in enumerate(progress_bar):
+        for _, batch in enumerate(progress_bar):
             # 注意: 实际训练需要完整实现forward pipeline
             # 这里提供训练循环的框架
             
             # 提取batch数据
             pixel_values = batch['pixel_values']
             input_ids = batch['input_ids']
+            attention_mask = batch['attention_mask']
             labels = batch['labels']
-            
-            # 检查pixel_values类型
+            image_grid_thw = batch['image_grid_thw']
+            # 更加鲁棒的转换逻辑
+            if isinstance(image_grid_thw, list):
+                # 如果列表里面是张量，先用 stack；如果是数字，直接转
+                if torch.is_tensor(image_grid_thw[0]):
+                    image_grid_thw = torch.stack(image_grid_thw).to(self.device)
+                else:
+                    image_grid_thw = torch.tensor(image_grid_thw).to(self.device)
+            elif torch.is_tensor(image_grid_thw):
+                image_grid_thw = image_grid_thw.to(self.device)
+            # 检查pixel_values类型、
+
+            # 问题在于dataloader这里
             if isinstance(pixel_values, list):
                 # Qwen2.5-VL返回的可能是list
                 # 需要特殊处理
-                continue
-            
+                pixel_values = torch.cat(pixel_values, dim=0)
+            print(f"pixel_values shape: {pixel_values.shape}")
             pixel_values = pixel_values.to(self.device)
             input_ids = input_ids.to(self.device)
             labels = labels.to(self.device)
+            attention_mask = attention_mask.to(self.device)
             
             # 获取文本嵌入
-            with torch.no_grad():
-                text_embeds = self.base_model.model.embed_tokens(input_ids)
-                text_embeds = text_embeds.mean(dim=1).float()  # [B, D]
+            # 模型中已经有文本嵌入处理
+            # with torch.no_grad():
+            #     text_embeds = self.model.embed_tokens(input_ids)
+            #     text_embeds = text_embeds.mean(dim=1).float()  # [B, D]
             
             # 简化训练循环示例
             # 实际使用需要完整的pipeline
@@ -280,8 +329,23 @@ class PATOTrainer:
             # 3. token sorting
             # 4. 计算distillation loss
             # 5. 计算budget regularization loss
+
+            output = self.model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+                labels=labels,
+                return_dict=True,
+            )
+            # language model loss
             
-            dummy_loss = torch.tensor(0.0, device=self.device, requires_grad=True)
+            dummy_loss = self.criterion(
+                lm_loss=output.loss,
+                aux_outputs=output.aux_outputs,
+                g_raw_module=self.model.g_raw,
+                token_sorter=self.model.visual.token_sorter,   
+            )
             
             # Backward
             if dummy_loss.requires_grad:
@@ -322,9 +386,7 @@ class PATOTrainer:
         Returns:
             评估统计信息
         """
-        self.g_raw.eval()
-        self.token_sorter.eval()
-        self.projector.eval()
+        self.model.eval()
         
         total_loss = 0.0
         
@@ -357,9 +419,9 @@ class PATOTrainer:
         checkpoint = {
             'epoch': epoch,
             'global_step': self.global_step,
-            'g_raw_state_dict': self.g_raw.state_dict(),
-            'token_sorter_state_dict': self.token_sorter.state_dict(),
-            'projector_state_dict': self.projector.state_dict(),
+            'g_raw_state_dict': self.model.g_raw.state_dict(),
+            'token_sorter_state_dict': self.model.visual.token_sorter.state_dict(),
+            'projector_state_dict': self.model.visual.projector.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'best_loss': self.best_loss,
@@ -388,9 +450,9 @@ class PATOTrainer:
         """
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         
-        self.g_raw.load_state_dict(checkpoint['g_raw_state_dict'])
-        self.token_sorter.load_state_dict(checkpoint['token_sorter_state_dict'])
-        self.projector.load_state_dict(checkpoint['projector_state_dict'])
+        self.model.g_raw.load_state_dict(checkpoint['g_raw_state_dict'])
+        self.model.visual.token_sorter.load_state_dict(checkpoint['token_sorter_state_dict'])
+        self.model.visual.projector.load_state_dict(checkpoint['projector_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         
@@ -410,7 +472,7 @@ def parse_args():
     parser.add_argument(
         '--model_path',
         type=str,
-        default='/data2/youneng/models/Qwen/Qwen2.5-VL-7B-Instruct',
+        default='./Qwen/Qwen2.5-VL-3B-Instruct',
         help='Qwen2.5-VL model path'
     )
     
@@ -418,31 +480,33 @@ def parse_args():
     parser.add_argument(
         '--data_path',
         type=str,
-        required=True,
+        #required=True, 
+        default='./datas/metadata/textvqa_cot_train.jsonl',
         help='VQA dataset JSON file path'
     )
     parser.add_argument(
         '--image_dir',
         type=str,
-        required=True,
+        # required=True,
+        default="./datas/cot/textvqa",
         help='Image directory'
     )
     parser.add_argument(
         '--dataset_type',
         type=str,
-        default='custom',
+        default="textvqa",
         choices=['vqav2', 'textvqa', 'custom'],
         help='Dataset type'
     )
     parser.add_argument(
         '--max_samples',
         type=int,
-        default=None,
+        default=2,
         help='Maximum number of samples (for quick testing)'
     )
     
     # 训练参数
-    parser.add_argument('--batch_size', type=int, default=4, help='Batch size')
+    parser.add_argument('--batch_size', type=int, default=1, help='Batch size')
     parser.add_argument('--max_epochs', type=int, default=10, help='Maximum epochs')
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=0.01, help='Weight decay')
@@ -487,7 +551,7 @@ def main():
     )
     
     # 加载checkpoint（如果需要）
-    if args.resume:
+    if args.resume is not None:
         trainer.load_checkpoint(args.resume)
     
     # 创建数据加载器

@@ -1,0 +1,43 @@
+{
+  "reconstruction": {
+    "mse": 0.0,
+    "psnr": 100.0,
+    "num_samples": 100
+  },
+  "inference_speed": {
+    "g_raw_ms": 0.547020435333252,
+    "token_sort_ms": 8.862574100494385,
+    "total_ms": 9.409594535827637,
+    "throughput": 106.27450483572227,
+    "num_samples": 100
+  },
+  "memory_usage": {
+    "1": {
+      "allocated_mb": 45.7890625,
+      "reserved_mb": 1042.0,
+      "peak_mb": 2825.2685546875
+    },
+    "2": {
+      "allocated_mb": 57.5400390625,
+      "reserved_mb": 2168.0,
+      "peak_mb": 2825.2685546875
+    },
+    "4": {
+      "allocated_mb": 81.2607421875,
+      "reserved_mb": 4228.0,
+      "peak_mb": 2825.2685546875
+    },
+    "8": {
+      "allocated_mb": 128.7021484375,
+      "reserved_mb": 8538.0,
+      "peak_mb": 5578.5185546875
+    }
+  },
+  "token_reduction": {
+    "original_tokens": 256.0,
+    "selected_tokens": 128.0,
+    "reduction_percent": 50.0,
+    "compression_ratio": 2.0,
+    "num_samples": 100
+  }
+}

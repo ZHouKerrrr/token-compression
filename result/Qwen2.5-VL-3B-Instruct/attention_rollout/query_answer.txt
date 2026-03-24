@@ -1,0 +1,10 @@
+idx: 0  Query: The light post is on what?  Answer: pole
+idx: 1  Query: What kind of furniture sits on the deck?  Answer: chair
+idx: 2  Query: What cooking utensil is round?  Answer: pan
+idx: 3  Query: What is the bird painted on?  Answer: vase
+idx: 4  Query: What animal is in front of the bench that is made of wood?  Answer: dog
+idx: 5  Query: What is the person to the right of the ball holding?  Answer: racket
+idx: 6  Query: The picture is on what?  Answer: counter
+idx: 7  Query: What is in front of the vehicle that is to the right of the fence?  Answer: motorcycle
+idx: 8  Query: What animal is standing?  Answer: polar bear
+idx: 9  Query: Which kind of fast food is on the dish?  Answer: pizza

@@ -60,7 +60,7 @@ class LightCNN(nn.Module):
         for i, hidden_dim in enumerate(hidden_dims):
             # Conv + BatchNorm + ReLU
             layers.extend([
-                nn.Conv2d(channels, hidden_dim, kernel_size=3, padding=1, bias=False),
+                nn.Conv2d(channels, hidden_dim, kernel_size=3, padding=1, stride=2,bias=False),
                 nn.BatchNorm2d(hidden_dim),
                 nn.ReLU(inplace=True)
             ])
@@ -87,14 +87,17 @@ class LightCNN(nn.Module):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, 
+                x: torch.Tensor,
+                image_grid_thw: Optional[torch.Tensor] = None,
+            ) -> torch.Tensor:
         """Forward pass
         
         Args:
-            x: Input images [B, C, H, W]
+            pixel_values: Input images [T, C, H, W]
             
         Returns:
-            Features [B, feature_dim, H, W]
+            Features [T, feature_dim, H, W]
         """
         return self.backbone(x)
 
@@ -107,19 +110,19 @@ class TextProjection(nn.Module):
     """
     
     def __init__(self,
-                 text_input_dim: int = 1536,  # Typical text embedding dimension
+                 text_hidden_size: int = 1536,  # Typical text embedding dimension
                  feature_dim: int = 256,
                  hidden_dim: Optional[int] = None,
                  dropout: float = 0.1):
         super().__init__()
         
-        self.text_input_dim = text_input_dim
+        self.text_hidden_size = text_hidden_size
         self.feature_dim = feature_dim
         self.hidden_dim = hidden_dim or (feature_dim * 2)
         
         # Projection layers
         self.projection = nn.Sequential(
-            nn.Linear(text_input_dim, self.hidden_dim),
+            nn.Linear(text_hidden_size, self.hidden_dim),
             nn.ReLU(inplace=True),
             nn.Dropout(dropout),
             nn.Linear(self.hidden_dim, feature_dim * 2),  # For FiLM (gamma + beta)
@@ -142,14 +145,14 @@ class TextProjection(nn.Module):
         """Forward pass
         
         Args:
-            text_embeddings: Text embeddings [B, D_text] or [B, L, D_text]
+            text_embeddings: Text embeddings [T, D_text] or [T, L, D_text]
             
         Returns:
-            FiLM parameters [B, 2*feature_dim]
+            FiLM parameters [T, 2*feature_dim]
         """
         # Handle multi-dimensional text embeddings (average pooling)
         if text_embeddings.dim() == 3:
-            text_embeddings = text_embeddings.mean(dim=1)  # [B, D_text]
+            text_embeddings = text_embeddings.mean(dim=1)  # [T, D_text]
         
         return self.projection(text_embeddings)
 
@@ -194,10 +197,10 @@ class DensityPredictor(nn.Module):
         """Forward pass
         
         Args:
-            features: FiLM-modulated features [B, feature_dim, H, W]
+            features: FiLM-modulated features [T, feature_dim, H, W]
             
         Returns:
-            Density map [B, 1, H, W] (values in [0, 1] after sigmoid)
+            Density map [T, 1, H, W] (values in [0, 1] after sigmoid)
         """
         density_logits = self.density_net(features)
         return torch.sigmoid(density_logits)
@@ -218,13 +221,15 @@ class WeightedDownsample(BaseGRaw):
         5. Perform normalized weighted downsampling
         6. Apply regularization (TV + area constraint)
     """
-    
-    def __init__(self, config, context: Dict[str, Any]):
+    config_class = 'GRawConfig'
+    def __init__(self, 
+                 config, 
+                 context: Dict[str, Any]):
         # Set configuration attributes BEFORE super().__init__() to avoid AttributeError
         # when BaseGRaw.__init__ calls self._setup_module()
         self.target_size = tuple(config.target_size)
-        self.text_dim = config.text_dim
-        self.vision_dim = config.vision_dim
+        self.text_hidden_size = config.text_hidden_size
+        self.vision_hidden_size = config.vision_hidden_size
         self.density_hidden_dim = config.density_hidden_dim
         self.density_layers = config.density_layers
         self.lambda_tv = config.lambda_tv
@@ -242,25 +247,22 @@ class WeightedDownsample(BaseGRaw):
         # Visual feature extractor
         self.light_cnn = LightCNN(
             in_channels=3,
-            feature_dim=self.vision_dim,
-            hidden_dims=(64, 128, 256, self.vision_dim)
+            feature_dim=self.vision_hidden_size,
+            #hidden_dims=(32, 64, 128, self.vision_hidden_size)
+            hidden_dims=(64, 128, 256, self.vision_hidden_size)
         )
         
         # Text projection for FiLM
         self.text_proj = TextProjection(
-            text_input_dim=self.text_dim,
-            feature_dim=self.vision_dim
+            text_hidden_size=self.text_hidden_size,
+            feature_dim=self.vision_hidden_size
         )
         
         # Density predictor
         self.density_predictor = DensityPredictor(
-            feature_dim=self.vision_dim,
+            feature_dim=self.vision_hidden_size,
             hidden_dim=self.density_hidden_dim
         )
-        
-        # Device
-        self.device = torch.device(self.context.get('device', 'cpu'))
-        self.to(self.device)
     
     def forward(self, 
                 images: torch.Tensor, 
@@ -269,27 +271,27 @@ class WeightedDownsample(BaseGRaw):
         """Forward pass for conditional precompression
         
         Args:
-            images: Input images [B, C, H, W]
-            text_embeddings: Query text embeddings [B, D] or [B, L, D]
+            images: Input images [T, C, H, W]
+            text_embeddings: Query text embeddings [T, D] or [T, L, D]
             target_size: Target output size (H, W). If None, use config default
             
         Returns:
-            Compressed images [B, C, H_out, W_out]
+            Compressed images [T, C, H_out, W_out]
         """
         if target_size is None:
             target_size = self.target_size
         
         # Step 1: Extract visual features using LightCNN
-        visual_features = self.light_cnn(images)  # [B, vision_dim, H, W]
+        visual_features = self.light_cnn(images)  # [T, vision_hidden_size, H, W]
         
         # Step 2: Project text embeddings for FiLM modulation
-        film_params = self.text_proj(text_embeddings)  # [B, 2*vision_dim]
+        film_params = self.text_proj(text_embeddings)  # [T, 2*vision_hidden_size]
         
         # Step 3: Apply FiLM modulation to condition visual features on text
         filmed_features = self._apply_film(visual_features, film_params)
         
         # Step 4: Predict significance density map (higher = more important regions)
-        density_map = self.density_predictor(filmed_features)  # [B, 1, H, W]
+        density_map = self.density_predictor(filmed_features)  # [T, 1, H, W]
         
         # Step 5: Apply minimum area constraint with gradient support
         density_map = self._apply_area_constraint(density_map)
@@ -307,16 +309,16 @@ class WeightedDownsample(BaseGRaw):
         """Apply Feature-wise Linear Modulation
         
         Args:
-            features: Visual features [B, D, H, W]
-            film_params: FiLM parameters [B, 2*D]
+            features: Visual features [T, D, H, W]
+            film_params: FiLM parameters [T, 2*D]
             
         Returns:
-            FiLM-modulated features [B, D, H, W]
+            FiLM-modulated features [T, D, H, W]
         """
-        batch_size, feature_dim, height, width = features.shape
-        
+        _, feature_dim, _, _ = features.shape
+        batch_size, _ = film_params.shape
         # Split into gamma and beta
-        gamma, beta = film_params.chunk(2, dim=1)  # [B, D] each
+        gamma, beta = film_params.chunk(2, dim=1)  # [T, D] each
         
         # Reshape for broadcasting
         gamma = gamma.view(batch_size, feature_dim, 1, 1)
@@ -329,22 +331,22 @@ class WeightedDownsample(BaseGRaw):
         """Apply minimum area constraint to density map with gradient support
         
         Args:
-            density_map: Density map [B, 1, H, W]
+            density_map: Density map [T, 1, H, W]
             
         Returns:
-            Constrained density map [B, 1, H, W]
+            Constrained density map [T, 1, H, W]
         """
         batch_size = density_map.shape[0]
         total_pixels = density_map.shape[2] * density_map.shape[3]
         min_area = total_pixels * self.min_area_ratio
         
         # Compute scaling factors while preserving gradients
-        current_sums = density_map.view(batch_size, -1).sum(dim=1)  # [B]
+        current_sums = density_map.view(batch_size, -1).sum(dim=1)  # [T]
         scale_factors = torch.where(
             current_sums < min_area,
             min_area / (current_sums + 1e-8),
             torch.ones_like(current_sums)
-        )  # [B]
+        )  # [T]
         
         # Apply scaling with gradient support
         scaled_density = density_map * scale_factors.view(-1, 1, 1, 1)
@@ -361,12 +363,12 @@ class WeightedDownsample(BaseGRaw):
         """Perform normalized weighted downsampling
         
         Args:
-            images: Input images [B, C, H, W]
-            density_map: Significance density [B, 1, H, W]
+            images: Input images [T, C, H, W]
+            density_map: Significance density [T, 1, H, W]
             target_size: Target size (H_out, W_out)
             
         Returns:
-            Downsampled images [B, C, H_out, W_out]
+            Downsampled images [T, C, H_out, W_out]
         """
         batch_size, _, height, width = images.shape
         target_height, target_width = target_size
@@ -380,7 +382,7 @@ class WeightedDownsample(BaseGRaw):
         grid_h = 2.0 * grid_h / (height - 1) - 1.0
         grid_w = 2.0 * grid_w / (width - 1) - 1.0
         
-        # Create sampling grid [B, H_out, W_out, 2]
+        # Create sampling grid [T, H_out, W_out, 2]
         grid = torch.stack([grid_w, grid_h], dim=-1).unsqueeze(0)
         grid = grid.expand(batch_size, -1, -1, -1)
         
@@ -388,11 +390,11 @@ class WeightedDownsample(BaseGRaw):
         # Sample images and density at target locations
         sampled_images = F.grid_sample(
             images, grid, mode='bilinear', padding_mode='border', align_corners=False
-        )  # [B, C, H_out, W_out]
+        )  # [T, C, H_out, W_out]
         
         sampled_densities = F.grid_sample(
             density_map, grid, mode='bilinear', padding_mode='border', align_corners=False
-        )  # [B, 1, H_out, W_out]
+        )  # [T, 1, H_out, W_out]
         
         # Create local averaging kernel for proper normalization
         kernel_size = max(3, min(7, max(height // target_height, width // target_width)))
@@ -407,11 +409,11 @@ class WeightedDownsample(BaseGRaw):
         local_density_sums = F.conv2d(density_map, kernel, padding=kernel_size//2)
         local_density_sums = F.grid_sample(
             local_density_sums, grid, mode='bilinear', padding_mode='border', align_corners=False
-        )  # [B, 1, H_out, W_out]
+        )  # [T, 1, H_out, W_out]
         
         # Apply density weighting: pixel values are weighted by local density importance
         # This ensures that regions with higher density get more importance in the output
-        weighted_output = sampled_images * sampled_densities  # [B, C, H_out, W_out]
+        weighted_output = sampled_images * sampled_densities  # [T, C, H_out, W_out]
         
         # Normalize by local density to avoid bias and ensure consistent scaling
         normalized_output = weighted_output / (local_density_sums + 1e-8)
@@ -425,9 +427,9 @@ class WeightedDownsample(BaseGRaw):
         """Compute method-specific regularization losses
         
         Args:
-            images: Original input images [B, C, H, W]
-            compressed_images: Compressed output images [B, C, H_out, W_out]
-            text_embeddings: Query embeddings [B, D] or [B, L, D]
+            images: Original input images [T, C, H, W]
+            compressed_images: Compressed output images [T, C, H_out, W_out]
+            text_embeddings: Query embeddings [T, D] or [T, L, D]
             
         Returns:
             Dictionary of loss terms
@@ -451,8 +453,8 @@ class WeightedDownsample(BaseGRaw):
         # Area constraint regularization (encourage compactness)
         if self.lambda_area > 0:
             # Penalize overly dispersed density maps
-            mean_density = density_map.mean(dim=[2, 3])  # [B, 1]
-            std_density = density_map.std(dim=[2, 3])   # [B, 1]
+            mean_density = density_map.mean(dim=[2, 3])  # [T, 1]
+            std_density = density_map.std(dim=[2, 3])   # [T, 1]
             
             # Want high mean density but low std (compact and concentrated)
             area_loss = torch.relu(0.1 - mean_density).mean() + std_density.mean()
@@ -476,9 +478,9 @@ def create_weighted_downsample_config(**kwargs) -> Dict[str, Any]:
     """
     default_config = {
         'method': 'A',
-        'target_size': [448, 448],
-        'text_dim': 1536,
-        'vision_dim': 256,
+        'target_size': [224, 224],
+        'text_hidden_size': 1536,
+        'vision_hidden_size': 256,
         'density_hidden_dim': 256,
         'density_layers': 2,
         'lambda_tv': 1e-4,

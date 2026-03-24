@@ -85,18 +85,7 @@ class BaseTokenSorter(nn.Module, ABC):
             aux_outputs: Auxiliary outputs dictionary
         """
         pass
-    
-    @abstractmethod
-    def compute_budget_loss(self, aux_outputs: Dict[str, Any]) -> torch.Tensor:
-        """Compute budget-related regularization losses
-        
-        Args:
-            aux_outputs: Auxiliary outputs from forward()
-            
-        Returns:
-            budget_loss: Scalar loss tensor
-        """
-        pass
+
     
     def update_temperature(self, current_step: int, total_steps: int) -> None:
         """Update temperature parameter (for annealing)

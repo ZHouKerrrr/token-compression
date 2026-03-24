@@ -11,6 +11,9 @@ from .pato_config import (
     ProjectorConfig,
     create_default_pato_config,
 )
+from .pato_model import (
+    PATOQwen2_5_VLModel,
+)
 
 __all__ = [
     'PATOConfig',
@@ -19,4 +22,5 @@ __all__ = [
     'TokenSortConfig',
     'ProjectorConfig',
     'create_default_pato_config',
+    'PATOQwen2_5_VLModel',
 ]

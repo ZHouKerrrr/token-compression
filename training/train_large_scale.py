@@ -306,10 +306,12 @@ class PATOLargeScaleTrainer:
         }
     
     def train_epoch(self, dataloader, epoch):
-        """训练一个epoch"""
+        """训练一个 epoch（带高级进度条显示）"""
+
         self.g_raw.train()
         self.token_sorter.train()
-        
+
+        # 统计指标
         epoch_metrics = {
             'total_loss': 0.0,
             'recon_loss': 0.0,
@@ -317,51 +319,68 @@ class PATOLargeScaleTrainer:
             'diversity_loss': 0.0,
             'token_reduction': 0.0
         }
-        
-        # 只在主进程显示进度条
+
+        num_batches = len(dataloader)
+
+        # 进度条（只在主线程）
         if self.is_main:
-            pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
+            pbar = tqdm(
+                total=num_batches,
+                desc=f"Epoch {epoch}/{self.config['max_epochs']}",
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
+                leave=True
+            )
         else:
-            pbar = dataloader
-        
+            pbar = None
+
         start_time = time.time()
-        
-        for batch_idx, batch in enumerate(pbar):
+
+        for batch_idx, batch in enumerate(dataloader):
+
+            # 单步训练
             metrics = self.train_step(batch)
-            
-            # 更新统计
+
+            # 累计到 epoch
             for key in epoch_metrics:
                 epoch_metrics[key] += metrics[key]
-            
+
             # 更新进度条
             if self.is_main:
+                pbar.update(1)
                 pbar.set_postfix({
-                    'loss': f"{metrics['total_loss']:.4f}",
-                    'recon': f"{metrics['recon_loss']:.4f}",
-                    'token': f"{metrics['token_reduction']:.1f}%",
-                    'lr': f"{self.optimizer.param_groups[0]['lr']:.2e}"
+                    "Loss": f"{metrics['total_loss']:.4f}",
+                    "Recon": f"{metrics['recon_loss']:.4f}",
+                    "Token ↓ %": f"{metrics['token_reduction']:.1f}",
+                    "LR": f"{self.optimizer.param_groups[0]['lr']:.2e}"
                 })
-                
-                # TensorBoard
+
+                # TensorBoard logging
                 if self.writer and batch_idx % 10 == 0:
-                    self.writer.add_scalar('Loss/total', metrics['total_loss'], self.global_step)
-                    self.writer.add_scalar('Loss/recon', metrics['recon_loss'], self.global_step)
-                    self.writer.add_scalar('Token/reduction', metrics['token_reduction'], self.global_step)
-                    self.writer.add_scalar('Train/lr', self.optimizer.param_groups[0]['lr'], self.global_step)
-            
+                    self.writer.add_scalar("Loss/total", metrics['total_loss'], self.global_step)
+                    self.writer.add_scalar("Loss/recon", metrics['recon_loss'], self.global_step)
+                    self.writer.add_scalar("Token/reduction", metrics['token_reduction'], self.global_step)
+                    self.writer.add_scalar("Train/lr", self.optimizer.param_groups[0]['lr'], self.global_step)
+
             self.global_step += 1
-        
-        # 计算平均
-        num_batches = len(dataloader)
+
+        # epoch 平均
         for key in epoch_metrics:
             epoch_metrics[key] /= num_batches
-        
+
         epoch_time = time.time() - start_time
-        epoch_metrics['time'] = epoch_time
-        epoch_metrics['samples_per_sec'] = len(dataloader.dataset) / epoch_time
-        
+        epoch_metrics["time"] = epoch_time
+        epoch_metrics["samples_per_sec"] = len(dataloader.dataset) / epoch_time
+
+        if self.is_main:
+            pbar.close()
+            print(f"\nEpoch {epoch} Finished:")
+            print(f"  Loss: {epoch_metrics['total_loss']:.4f}")
+            print(f"  Recon Loss: {epoch_metrics['recon_loss']:.4f}")
+            print(f"  Token Reduction: {epoch_metrics['token_reduction']:.1f}%")
+            print(f"  Time: {epoch_metrics['time']:.1f}s")
+            print(f"  Speed: {epoch_metrics['samples_per_sec']:.1f} samples/s\n")
+
         return epoch_metrics
-    
     def save_checkpoint(self, save_dir, epoch, metrics):
         """保存检查点"""
         if not self.is_main:

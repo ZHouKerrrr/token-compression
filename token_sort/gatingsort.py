@@ -233,7 +233,6 @@ class RandomGatingTokenSorter(BaseTokenSorter):
             query_dim = self.context.get('hidden_size', 768)
             query_embeddings = torch.zeros(
                 B, query_dim,
-                device=hidden_states.device,
                 dtype=hidden_states.dtype,
             )
         

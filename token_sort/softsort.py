@@ -86,8 +86,8 @@ class DifferentiableSortingTokenSorter(BaseTokenSorter):
         self.sinkhorn_iters = self._config_value('sinkhorn_iters', 5)
         
         # 特征维度
-        token_dim = self.context.get('hidden_size', 768)
-        query_dim = self.context.get('hidden_size', 768)
+        token_dim = self.context.get('out_hidden_size', 2048)
+        query_dim = self.context.get('out_hidden_size', 2048)
         
         # 当前温度（训练时动态更新）
         self.register_buffer('current_tau', torch.tensor(self.tau_init))
@@ -312,11 +312,12 @@ class DifferentiableSortingTokenSorter(BaseTokenSorter):
             sort_indices: (B, N) 排序索引
             aux_outputs: 辅助输出字典
         """
+        # TODO 这里的N并不代表token数，因为有padding
         B, N, D = hidden_states.shape
         
         # 处理默认值
         if query_embeddings is None:
-            query_dim = self.context.get('hidden_size', 768)
+            query_dim = D
             query_embeddings = torch.zeros(
                 B, query_dim,
                 device=hidden_states.device,
@@ -333,7 +334,9 @@ class DifferentiableSortingTokenSorter(BaseTokenSorter):
                 budget = N
         
         budget = min(budget, N)  # 不能超过总 token 数
-        
+
+        # TODO 存疑：padding是以0进入计算，是否会影响最终结果，单靠将padding的分数置0，有效否？
+
         # ============================================================
         # Step 1: 计算 token 重要性分数
         # ============================================================
@@ -355,18 +358,15 @@ class DifferentiableSortingTokenSorter(BaseTokenSorter):
         # ============================================================
         # P^T @ hidden_states: (B, N, N) @ (B, N, D) -> (B, N, D)
         sorted_tokens_full = torch.bmm(P, hidden_states)  # (B, N, D)
-        
         # ============================================================
         # Step 4: 截断到目标 budget
         # ============================================================
         sorted_tokens = sorted_tokens_full[:, :budget, :]  # (B, budget, D)
-        
         # ============================================================
         # Step 5: 生成硬排序索引（用于推理和可视化）
         # ============================================================
         # 基于分数的硬排序
         sort_indices = torch.argsort(scores, dim=1, descending=True)  # (B, N)
-        
         # ============================================================
         # Step 6: 计算正则化损失
         # ============================================================
@@ -389,7 +389,7 @@ class DifferentiableSortingTokenSorter(BaseTokenSorter):
             'diversity_loss': diversity_loss,
         }
         
-        return sorted_tokens, sort_indices, aux_outputs
+        return sorted_tokens, aux_outputs
     
     def compute_budget_loss(self, aux_outputs: Dict[str, Any]) -> torch.Tensor:
         """计算 token 预算约束损失

@@ -208,3 +208,20 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Ignore list
+.vscode/
+bin/
+datas/
+demo_images/
+doc/
+examples/
+logs/
+tests/
+viscot_benchmark/
+viscot_dataset/
+viscot_eval/
+wandb/
+test.ipynb
+TODO.md
+TODO.pdf
