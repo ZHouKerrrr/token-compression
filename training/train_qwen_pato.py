@@ -39,7 +39,10 @@ from training.data import (
     RepeatRandomSampler
 )
 from tqdm import tqdm
-from pato_integration import PATOQwen2_5_VLModel, PATOQwen2_5_VLConfig
+from pato_integration import (
+    PATOQwen2_5_VLForConditionalGeneration,
+    PATOQwen2_5_VLConfig,
+)
 from pato_integration.pato_config import PATOConfig, create_default_pato_config
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     Qwen2_5_VLForConditionalGeneration, 
@@ -120,11 +123,11 @@ class PATOTrainingArgument(TrainingArguments):
         metadata={"help": "Weight for knowledge distillation loss."},
     )
     lambda_distortion: float = field(
-        default=0.5,
+        default=1.0,
         metadata={"help": "Weight for distortion loss."},
     )
     lambda_rate: float = field(
-        default=1.0,
+        default=1e-3,
         metadata={"help": "Weight for rate loss."},
     )
     target_rate: float = field(
@@ -262,18 +265,12 @@ class PATOTrainer(Trainer):
                 T = 1.0
             
                 aux_outputs = outputs.aux_outputs
-                logits_mask = aux_outputs["logits_mask"]
                 student_logits = outputs.logits
-                teacher_logits = teacher_outputs.logits[logits_mask]
+                teacher_logits = teacher_outputs.logits
                 student_labels = inputs.get("labels", labels)
-                student_labels = student_labels[logits_mask]
                 valid_token_mask = (student_labels != -100).view(-1)
                 student_logits = student_logits[0][valid_token_mask]
-                teacher_logits = teacher_logits[valid_token_mask]
-                # 【新增修复代码】：动态对齐词表维度
-                min_vocab_size = min(student_logits.size(-1), teacher_logits.size(-1))
-                student_logits = student_logits[..., :min_vocab_size]
-                teacher_logits = teacher_logits[..., :min_vocab_size]
+                teacher_logits = teacher_logits[0][valid_token_mask]
                 student_log_probs = F.log_softmax(student_logits / T, dim=-1)   # [B, T, V]
                 teacher_probs = F.softmax(teacher_logits / T, dim=-1)   # [B, T, V]
                 
@@ -289,13 +286,12 @@ class PATOTrainer(Trainer):
                     progress = self.state.global_step / self.state.max_steps
                 else:
                     progress = 0.0
-
                 self.target_rate_pre = self.target_rate + 0.5 * (1.0 - self.target_rate) * (
                     1.0 + math.cos(math.pi * progress)
-                )
+                ) # 1 -> 0.25
                 keep_ratio = aux_outputs["keep_ratio"]
-                rate_loss = (keep_ratio.mean(dim=0) - self.target_rate_pre) ** 2
-                distortion_loss = aux_outputs["distortion_loss"]
+                rate_loss = keep_ratio.mean(dim=0)
+                distortion_loss = outputs["loss"]
                 loss = self.lambda_distortion * distortion_loss + self.lambda_kd * kd_loss + self.lambda_rate * rate_loss
             else:
                 loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
@@ -306,8 +302,9 @@ class PATOTrainer(Trainer):
             and num_items_in_batch is not None
         ):
             loss *= self.accelerator.num_processes
-        # print_rank0(f"target ratio: {self.target_rate_pre}")
-        # print_rank0(f"Distortion Loss: {distortion_loss},  KD Loss: {kd_loss},  Rate Loss: {rate_loss},  Loss: {loss}")
+        if self.state.global_step % 100 == 0:
+            print_rank0(f"target ratio: {self.target_rate_pre}  keep ratio: {keep_ratio}")
+            print_rank0(f"Distortion Loss: {distortion_loss},  KD Loss: {kd_loss},  Rate Loss: {rate_loss[0]},  Loss: {loss[0]}")
         return (loss, outputs) if return_outputs else loss
     
 
@@ -456,14 +453,16 @@ def test_model(
 
         # dict
         if isinstance(outputs, dict):
-
-            # 常见：aux_outputs 里带 rate_loss
             if "aux_outputs" in outputs and isinstance(outputs["aux_outputs"], dict):
                 aux = outputs["aux_outputs"]
                 if "rate_loss" in aux:
                     rate_loss = aux["rate_loss"]
+                elif "keep_ratio" in aux:
+                    rate_loss = aux["keep_ratio"].sum()
                 if "distortion_loss" in aux:
                     distortion_loss = aux["distortion_loss"]
+                else:
+                    distortion_loss = outputs["loss"]
 
         return distortion_loss, rate_loss
 
@@ -737,11 +736,14 @@ def main():
         **base_model_config.to_dict()
     )
     # print(config)
-    model = PATOQwen2_5_VLModel.from_pretrained(
+    model = PATOQwen2_5_VLForConditionalGeneration.from_pretrained(
         model_path,
         config=config,
         device_map="cuda",
-        attn_implementation="flash_attention_2",
+        attn_implementation={
+            "vision_config": "flash_attention_2",
+            "text_config": "pato",
+        },
         torch_dtype=model_args.torch_dtype
     )
     print_rank0("\n" + "="*60)
@@ -753,7 +755,7 @@ def main():
         teacher_model_path,
         config=teacher_model_config,
         device_map="cuda",
-        attn_implementation="flash_attention_2",
+        attn_implementation='flash_attention_2',
         torch_dtype=model_args.torch_dtype
     )
     pato_state_dict = None
@@ -795,8 +797,8 @@ def main():
     # evaluate_batch(model, train_dataloader, processor)
     # return
     # test model
-    # test_model(model=model, trainer=trainer, train_dataset=train_dataset, collator=collator)
-    # return
+    test_model(model=model, trainer=trainer, train_dataset=train_dataset, collator=collator)
+    return
     # ------------ Training ------------ #
     # 训练循环
     print_rank0("\n" + "="*60)

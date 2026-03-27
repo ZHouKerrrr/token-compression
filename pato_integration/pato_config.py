@@ -48,7 +48,7 @@ class TokenSortConfig:
     
     # General settings
     enable: bool = True
-    mode: str = 'hard_token_sorter'  
+    mode: str = 'dynamic_token_sorter'  
     # Method hard_token_sorter: Hard token pruned by scores
     token_threshold: float = 0.5
     score_threshold: float = 0

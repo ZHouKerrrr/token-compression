@@ -12,7 +12,7 @@ from .pato_config import (
     create_default_pato_config,
 )
 from .pato_model import (
-    PATOQwen2_5_VLModel,
+    PATOQwen2_5_VLForConditionalGeneration,
 )
 
 __all__ = [
@@ -22,5 +22,5 @@ __all__ = [
     'TokenSortConfig',
     'ProjectorConfig',
     'create_default_pato_config',
-    'PATOQwen2_5_VLModel',
+    'PATOQwen2_5_VLForConditionalGeneration',
 ]

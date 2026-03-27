@@ -20,15 +20,15 @@ config="train_configs/qwen2_5_3b_pato/qwen2_5_3b_pato.yaml"
 
 eval_list=( \
 "vqav2_val_lite" \
-"gqa" \
-"vizwiz_vqa_val" \
-"scienceqa_img" \
-"pope" \
-"mme" \
-"mmbench_en_test" \
-"mmbench_cn_test" \
-"seedbench" \
-"vstar_bench" \
+# "gqa" \
+# "vizwiz_vqa_val" \
+# "scienceqa_img" \
+# "pope" \
+# "mme" \
+# "mmbench_en_test" \
+# "mmbench_cn_test" \
+# "seedbench" \
+# "vstar_bench" \
 )
 
 for task in ${eval_list[@]}

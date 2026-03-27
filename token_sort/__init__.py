@@ -28,6 +28,7 @@ except ImportError:
 # Import the specific classes to make them available
 from .softsort import DifferentiableSortingTokenSorter
 from .hardsort import HardTokenSorter
+from .dynamic import DynamicTokenSorter
 try:
     from .gatingsort import RandomGatingTokenSorter
 except ImportError:
@@ -50,6 +51,7 @@ __all__ = [
     "multi_distillation",
     "DifferentiableSortingTokenSorter",
     "HardTokenSorter",
+    "DynamicTokenSorter",
 ]
 
 if RandomGatingTokenSorter is not None:

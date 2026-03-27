@@ -237,9 +237,8 @@ class HardTokenSorter(BaseTokenSorter):
             scores, lengths, training=training
         )
         
-        # 使用 STE 掩码进行特征放缩 (保留梯度的关键)
         hidden_states = hidden_states * mask.unsqueeze(-1)
-        
+
         # 提取被保留的 Tokens
         filtered_hidden_list = [
             hidden_states[i][hard_mask[i]]

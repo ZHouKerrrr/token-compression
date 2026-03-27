@@ -1,8 +1,8 @@
 import os
 import sys
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if BASE_DIR not in sys.path:
-    sys.path.insert(0, BASE_DIR)
+# BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+# if BASE_DIR not in sys.path:
+#     sys.path.insert(0, BASE_DIR)
 import argparse
 from pathlib import Path
 from typing import Optional
@@ -38,7 +38,7 @@ from training.data import (
     RepeatRandomSampler
 )
 from tqdm import tqdm
-from pato_integration import PATOQwen2_5_VLModel, PATOQwen2_5_VLConfig
+from pato_integration import PATOQwen2_5_VLForConditionalGeneration, PATOQwen2_5_VLConfig
 from pato_integration.pato_config import PATOConfig, create_default_pato_config
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     Qwen2_5_VLForConditionalGeneration, 
@@ -176,6 +176,9 @@ def ratio(
         if batch_idx % 10 == 0:
             print(f"\nTotal samples: {batch_idx}")
             print(f"Average of keep_ratio: {keep_ratio / batch_idx}")
+        
+        if batch_idx == 100:
+            break
     keep_ratio = keep_ratio / batch_idx
     
     print(f"Total samples: {batch_idx}")
@@ -229,7 +232,7 @@ def main():
         **base_model_config.to_dict()
     )
     # print(config)
-    model = PATOQwen2_5_VLModel.from_pretrained(
+    model = PATOQwen2_5_VLForConditionalGeneration.from_pretrained(
         model_path,
         config=config,
         device_map="cuda",

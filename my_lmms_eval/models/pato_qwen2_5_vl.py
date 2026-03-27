@@ -30,7 +30,7 @@ from trl import TrlParser
 # ==========================================================
 # TODO: 请在这里导入你自定义的 _X 模块 (Monkey Patch 类)
 # 例如：from my_custom_modules import Qwen2_5_VLForConditionalGeneration_X, ...
-from pato_integration import PATOQwen2_5_VLModel, PATOQwen2_5_VLConfig
+from pato_integration import PATOQwen2_5_VLForConditionalGeneration, PATOQwen2_5_VLConfig
 from pato_integration.pato_config import PATOConfig, create_default_pato_config
 # ==========================================================
 # 示例：
@@ -123,7 +123,7 @@ class PATO_Qwen2_5_VL(lmms):
             **base_model_config.to_dict()
         )
         
-        self._model = PATOQwen2_5_VLModel.from_pretrained(
+        self._model = PATOQwen2_5_VLForConditionalGeneration.from_pretrained(
             pretrained, 
             config=self._config,
             device_map="cuda",
