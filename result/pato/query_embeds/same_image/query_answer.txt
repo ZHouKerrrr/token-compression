@@ -1,0 +1,1 @@
+idx: 0  Query: The picture is on what?  Answer: counter

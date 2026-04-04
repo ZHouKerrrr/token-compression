@@ -5,7 +5,10 @@ This module extends Qwen2.5-VL with PATO components:
 - Token Sort: Query-conditional token selection
 - Simplified Projector: Linear projection from vision to LLM space
 """
-
+"""
+TODO:
+    !!!!!!!!!! CLEAR all endpoint for testing
+"""
 import sys
 import os
 from typing import Optional, Tuple, List, Union, Dict, Any
@@ -57,7 +60,7 @@ from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import add_start_docstrings, add_start_docstrings_to_model_forward, logging, replace_return_docstrings
 
 from .pato_config import PATOQwen2_5_VLConfig
-from .utils import reorganize_tensor
+from .utils import *
 from g_raw import get_graw_class
 from token_sort import get_token_sort_class
 
@@ -151,173 +154,6 @@ class PATOSimplifiedProjector(nn.Module):
         """
         return self.projection(vision_tokens)
 
-class PATOAttention(Qwen2_5_VLAttention):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-    
-    def softmax_with_mask(self, attn, prune_mask, eps=1e-6):
-
-        B, N = prune_mask.size()
-        B, H, N, N = attn.size()
-        attn_prune_mask = prune_mask.reshape(B, 1, 1, N)  # * prune_mask.reshape(B, 1, N, 1)
-        eye = torch.eye(N, dtype=attn_prune_mask.dtype, device=attn_prune_mask.device).view(1, 1, N, N)
-        attn_prune_mask = attn_prune_mask + (1.0 - attn_prune_mask) * eye
-        max_att = torch.max(attn, dim=-1, keepdim=True)[0]
-        attn = attn - max_att
-
-        # for stable training
-        # e^z * mask / (e^z) (mask == 1)
-        attn = attn.to(torch.float32).exp_() * attn_prune_mask.to(torch.float32)
-        attn = (attn + eps/N) / (attn.sum(dim=-1, keepdim=True) + eps)
-        return attn.type_as(max_att)
-
-    def forward(
-        self, 
-        hidden_states, 
-        attention_mask = None, 
-        position_ids = None, 
-        past_key_value = None, 
-        output_attentions = False, 
-        use_cache = False, 
-        cache_position = None, 
-        position_embeddings = None,
-        prune_mask = None,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-        bsz, q_len, _ = hidden_states.size()
-
-        query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
-
-        query_states = query_states.view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
-        key_states = key_states.view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
-        value_states = value_states.view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
-
-        cos, sin = position_embeddings
-        query_states, key_states = apply_multimodal_rotary_pos_emb(
-            query_states, key_states, cos, sin, self.rope_scaling["mrope_section"]
-        )
-
-        if past_key_value is not None:
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}  # Specific to RoPE models
-            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
-
-        # repeat k/v heads if n_kv_heads < n_heads
-        key_states = repeat_kv(key_states, self.num_key_value_groups)
-        value_states = repeat_kv(value_states, self.num_key_value_groups)
-
-        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
-
-        if attention_mask is not None:  # no matter the length, we just slice it
-            causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
-            attn_weights = attn_weights + causal_mask
-
-        # Fix precision issues in Qwen2-VL float16 inference
-        # Replace inf values with zeros in attention weights to prevent NaN propagation
-        if query_states.dtype == torch.float16:
-            attn_weights = torch.where(torch.isinf(attn_weights), torch.zeros_like(attn_weights), attn_weights)
-
-        # upcast attention to fp32
-        if prune_mask is None:
-            attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-        else:
-            attn_weights = self.softmax_with_mask(attn=attn_weights, prune_mask=prune_mask)
-        attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
-        attn_output = torch.matmul(attn_weights, value_states)
-
-        if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
-            raise ValueError(
-                f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
-                f" {attn_output.size()}"
-            )
-
-        attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.reshape(bsz, q_len, -1)
-
-        attn_output = self.o_proj(attn_output)
-
-        if not output_attentions:
-            attn_weights = None
-
-        return attn_output, attn_weights, past_key_value
-
-
-class PATOQwen2_5_VLDecoderLayer(nn.Module):
-    def __init__(self, config: Qwen2_5_VLConfig, layer_idx: int):
-        super().__init__()
-        self.hidden_size = config.hidden_size
-        self.self_attn = PATOAttention(config, layer_idx)
-        self.mlp = Qwen2MLP(config)
-        self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Tuple[torch.Tensor]] = None,
-        output_attentions: Optional[bool] = False,
-        use_cache: Optional[bool] = False,
-        cache_position: Optional[torch.LongTensor] = None,
-        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
-        prune_mask = None,
-        **kwargs,
-    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
-        """
-        Args:
-            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
-            attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
-                `(batch, sequence_length)` where padding elements are indicated by 0.
-            output_attentions (`bool`, *optional*):
-                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail.
-            use_cache (`bool`, *optional*):
-                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
-                (see `past_key_values`).
-            past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
-            cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
-                Indices depicting the position of the input sequence tokens in the sequence.
-            position_embeddings (`Tuple[torch.FloatTensor, torch.FloatTensor]`, *optional*):
-                Tuple containing the cosine and sine positional embeddings of shape `(batch_size, seq_len, head_dim)`,
-                with `head_dim` being the embedding dimension of each attention head.
-            kwargs (`dict`, *optional*):
-                Arbitrary kwargs to be ignored, used for FSDP and other methods that injects code
-                into the model
-        """
-
-        residual = hidden_states
-
-        hidden_states = self.input_layernorm(hidden_states)
-
-        # Self Attention
-        hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            cache_position=cache_position,
-            position_embeddings=position_embeddings,
-            prune_mask = prune_mask,
-        )
-        hidden_states = residual + hidden_states
-
-        # Fully Connected
-        residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states
-
-        outputs = (hidden_states,)
-
-        if output_attentions:
-            outputs += (self_attn_weights,)
-
-        if use_cache:
-            outputs += (present_key_value,)
-
-        return outputs
 
 class PATOQwen2_5_VisionTransformer(Qwen2_5_VisionTransformerPretrainedModel):
     """Extended Vision Transformer with Token Sort
@@ -461,14 +297,11 @@ class PATOQwen2_5_VisionTransformer(Qwen2_5_VisionTransformerPretrainedModel):
                 batch_first=True,
             ).to(device) # [B, max_len, dim]
             lengths = torch.as_tensor([v.size(0) for v in hidden_states], device=device).to(hidden_states.device)
-            assert B == 1, "The batch size in prune work must be 1."
-            # hidden_states = hidden_states.unsqueeze(0)
-            
-            # When training, token sorter only return aux_outputs
             sorted_tokens, sort_aux = self.token_sorter(
                 hidden_states=hidden_states,
                 lengths=lengths,
                 query_embeddings=query_embeddings,
+                image_grid_thw=grid_thw,
                 training=self.training
             ) # [seq, dim]
             aux_outputs.update(sort_aux)
@@ -490,9 +323,195 @@ class PATOQwen2_5_VisionTransformer(Qwen2_5_VisionTransformerPretrainedModel):
             return sorted_tokens, aux_outputs
         else:
             return hidden_states, aux_outputs
-"""
-    TODO: add prune mask
-"""
+
+class PATOQwen2_5_VLRotaryEmbedding(Qwen2_5_VLRotaryEmbedding):
+    def __init__(self, config: Qwen2_5_VLConfig, device=None):
+        super().__init__(config, device)
+
+    @torch.no_grad()
+    @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
+    def forward(self, x, position_ids):
+        # In contrast to other models, Qwen2_5_VL has different position ids for the grids
+        # So we expand the inv_freq to shape (3, ...)
+        inv_freq_expanded = self.inv_freq[None, None, :, None].float().expand(3, position_ids.shape[1], -1, 1)
+        position_ids_expanded = position_ids[:, :, None, :].float()  # shape (3, bs, 1, positions)
+
+        device_type = x.device.type if isinstance(x.device.type, str) and x.device.type != "mps" else "cpu"
+        with torch.autocast(device_type=device_type, enabled=False):  # Force float32
+            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(2, 3)
+            emb = torch.cat((freqs, freqs), dim=-1)
+            cos = emb.cos() * self.attention_scaling
+            sin = emb.sin() * self.attention_scaling
+
+        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
+
+class PATOAttention(Qwen2_5_VLAttention):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    
+    def softmax_with_mask(self, attn, prune_mask, eps=1e-6):
+
+        B, N = prune_mask.size()
+        B, H, N, N = attn.size()
+        attn_prune_mask = prune_mask.reshape(B, 1, 1, N)  # * prune_mask.reshape(B, 1, N, 1)
+        eye = torch.eye(N, dtype=attn_prune_mask.dtype, device=attn_prune_mask.device).view(1, 1, N, N)
+        attn_prune_mask = attn_prune_mask + (1.0 - attn_prune_mask) * eye
+        max_att = torch.max(attn, dim=-1, keepdim=True)[0]
+        attn = attn - max_att
+
+        # for stable training
+        # e^z * mask / (e^z) (mask == 1)
+        attn = attn.to(torch.float32).exp_() * attn_prune_mask.to(torch.float32)
+        attn = (attn + eps/N) / (attn.sum(dim=-1, keepdim=True) + eps)
+        return attn.type_as(max_att)
+
+    def forward(
+        self, 
+        hidden_states, 
+        attention_mask = None, 
+        position_ids = None, 
+        past_key_value = None, 
+        output_attentions = False, 
+        use_cache = False, 
+        cache_position = None, 
+        position_embeddings = None,
+        prune_mask = None,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        bsz, q_len, _ = hidden_states.size()
+
+        query_states = self.q_proj(hidden_states)
+        key_states = self.k_proj(hidden_states)
+        value_states = self.v_proj(hidden_states)
+
+        query_states = query_states.view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
+        key_states = key_states.view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
+        value_states = value_states.view(bsz, q_len, -1, self.head_dim).transpose(1, 2)
+
+        cos, sin = position_embeddings
+        query_states, key_states = apply_multimodal_rotary_pos_emb(
+            query_states, key_states, cos, sin, self.rope_scaling["mrope_section"]
+        )
+        # TODO prune query_state and key_state here ?
+        if past_key_value is not None:
+            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}  # Specific to RoPE models
+            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+
+        # repeat k/v heads if n_kv_heads < n_heads
+        key_states = repeat_kv(key_states, self.num_key_value_groups)
+        value_states = repeat_kv(value_states, self.num_key_value_groups)
+
+        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+
+        if attention_mask is not None:  # no matter the length, we just slice it
+            causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+            attn_weights = attn_weights + causal_mask
+
+        # Fix precision issues in Qwen2-VL float16 inference
+        # Replace inf values with zeros in attention weights to prevent NaN propagation
+        if query_states.dtype == torch.float16:
+            attn_weights = torch.where(torch.isinf(attn_weights), torch.zeros_like(attn_weights), attn_weights)
+
+        # upcast attention to fp32
+        if prune_mask is None:
+            attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+        else:
+            attn_weights = self.softmax_with_mask(attn=attn_weights, prune_mask=prune_mask)
+        attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+        attn_output = torch.matmul(attn_weights, value_states)
+
+        if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
+            raise ValueError(
+                f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
+                f" {attn_output.size()}"
+            )
+
+        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = attn_output.reshape(bsz, q_len, -1)
+
+        attn_output = self.o_proj(attn_output)
+
+        if not output_attentions:
+            attn_weights = None
+
+        return attn_output, attn_weights, past_key_value
+
+class PATOQwen2_5_VLDecoderLayer(nn.Module):
+    def __init__(self, config: Qwen2_5_VLConfig, layer_idx: int):
+        super().__init__()
+        self.hidden_size = config.hidden_size
+        self.self_attn = PATOAttention(config, layer_idx)
+        self.mlp = Qwen2MLP(config)
+        self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        prune_mask = None,
+        **kwargs,
+    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+        """
+        Args:
+            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
+            attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
+                `(batch, sequence_length)` where padding elements are indicated by 0.
+            output_attentions (`bool`, *optional*):
+                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
+                returned tensors for more detail.
+            use_cache (`bool`, *optional*):
+                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
+                (see `past_key_values`).
+            past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
+            cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
+                Indices depicting the position of the input sequence tokens in the sequence.
+            position_embeddings (`Tuple[torch.FloatTensor, torch.FloatTensor]`, *optional*):
+                Tuple containing the cosine and sine positional embeddings of shape `(batch_size, seq_len, head_dim)`,
+                with `head_dim` being the embedding dimension of each attention head.
+            kwargs (`dict`, *optional*):
+                Arbitrary kwargs to be ignored, used for FSDP and other methods that injects code
+                into the model
+        """
+
+        residual = hidden_states
+
+        hidden_states = self.input_layernorm(hidden_states)
+
+        # Self Attention
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+            prune_mask = prune_mask,
+        )
+        hidden_states = residual + hidden_states
+
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
+
+        outputs = (hidden_states,)
+
+        if output_attentions:
+            outputs += (self_attn_weights,)
+
+        if use_cache:
+            outputs += (present_key_value,)
+
+        return outputs
+
 class PATOQwen2_5_VLModel(Qwen2_5_VLPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
@@ -504,7 +523,7 @@ class PATOQwen2_5_VLModel(Qwen2_5_VLPreTrainedModel):
         )
         self._attn_implementation = config._attn_implementation
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.rotary_emb = Qwen2_5_VLRotaryEmbedding(config=config)
+        self.rotary_emb = PATOQwen2_5_VLRotaryEmbedding(config=config)
 
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
@@ -514,7 +533,7 @@ class PATOQwen2_5_VLModel(Qwen2_5_VLPreTrainedModel):
         self,
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
-        prune_mask: Optional[torch.Tensor] = None,
+        aux_outputs: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
@@ -567,7 +586,7 @@ class PATOQwen2_5_VLModel(Qwen2_5_VLPreTrainedModel):
 
         # create position embeddings to be shared across the decoder layers
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
-
+        # TODO prune position embeding here
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
@@ -576,7 +595,7 @@ class PATOQwen2_5_VLModel(Qwen2_5_VLPreTrainedModel):
         for decoder_layer in self.layers:
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
-
+            prune_mask = aux_outputs.get("llm_prune_mask", None)
             if self.gradient_checkpointing and self.training:
                 layer_outputs = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
@@ -858,7 +877,6 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
         attention_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """Extract text embeddings for g_raw and token sort
-        
         Args:
             input_ids: [B, seq_len]
             attention_mask: [B, seq_len]
@@ -873,12 +891,10 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
         if attention_mask is not None:
             mask_expanded = attention_mask.unsqueeze(-1).float()  # [B, seq_len, 1]
             embeds_masked = embeds * mask_expanded
-            text_embeds = embeds_masked.sum(dim=1) / (mask_expanded.sum(dim=1) + 1e-8)
         else:
-            text_embeds = embeds.mean(dim=1)
-        
-        return text_embeds  # [B, hidden_dim]
-    
+            embeds_masked = embeds
+        return embeds_masked  # [B, text_len, hidden_dim]
+
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -903,7 +919,6 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
         aux_outputs = {}
 
         # Config extraction
-        B = input_ids.shape[0]
         patch_size = self.vision_config.patch_size                      # 14
         temporal_patch_size = self.vision_config.temporal_patch_size    # 2
         spatial_merge_size = self.vision_config.spatial_merge_size      # 2
@@ -920,8 +935,10 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
         # ============================================================
         # Step 1: Extract text embeddings for conditioning
         # ============================================================
-        if input_ids is not None:
-            query_embeds = self.get_text_embeddings(input_ids, attention_mask)
+        query_input_ids = kwargs.get("query_input_ids", None)
+        query_attention_mask = kwargs.get("query_attention_mask", None)
+        if query_input_ids is not None and query_attention_mask is not None:
+            query_embeds = self.get_text_embeddings(query_input_ids, query_attention_mask)
         else:
             query_embeds = None
 
@@ -972,6 +989,18 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
             if vision_aux is not None:
                 hard_prune_mask = vision_aux.get("hard_prune_mask", None)
                 soft_prune_mask = vision_aux.get("soft_prune_mask", None)
+                transform_matrices = vision_aux.get("transform_matrices", None)
+            # endpoint for testing
+            if self.pato_config.evaluate:
+                return vision_aux
+            
+            s_idx = (input_ids == vision_start_token_id).long().argmax(dim=1) + 1
+            e_idx = (input_ids == vision_end_token_id).long().argmax(dim=1)
+            vision_token_nums = e_idx - s_idx
+            vision_seq_lens = (image_grid_thw[:, 0] * image_grid_thw[:, 1] * image_grid_thw[:, 2]) // (self.vision_config.spatial_merge_size ** 2)
+            assert torch.equal(vision_seq_lens, vision_token_nums), "Vision tokens in input_ids have equal to image_grids"
+            B, seq_len = input_ids.shape
+            device = input_ids.device
 
             if hard_prune_mask is not None:
                 # mask of position_ids and input_ids and attn_mask
@@ -985,69 +1014,21 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
                     device=input_ids.device,
                     dtype=torch.bool,
                 ) # [B, vt]
-                # 1. 向量化获取整个 Batch 的起点和终点索引
-                # 使用 argmax(dim=1) 找到第一个匹配的 token 位置
-                s_idx = (input_ids == vision_start_token_id).long().argmax(dim=1) + 1
-                e_idx = (input_ids == vision_end_token_id).long().argmax(dim=1)
-
-                # 2. 并行计算和校验 vision_token 数量
-                vision_token_nums = e_idx - s_idx
-                # 利用张量逐元素乘法计算整个 batch 的 vision_seq_len
-                vision_seq_lens = (image_grid_thw[:, 0] * image_grid_thw[:, 1] * image_grid_thw[:, 2]) // (self.vision_config.spatial_merge_size ** 2)
-
-                # 使用 torch.equal 一次性判断整个 batch 是否都相等
-                assert torch.equal(vision_seq_lens, vision_token_nums), "Vision tokens in input_ids have equal to image_grids"
-
-                # --- 核心：通过布尔掩码实现并行变长切片赋值 ---
-                B, seq_len = input_ids.shape
-                device = input_ids.device
-
-                # 3. 构造 目标位置（input_ids 空间）的 2D Mask 矩阵：形状 (B, seq_len)
-                # 只要位置在 s_idx 和 e_idx 之间，Mask 对应位置就为 True
                 seq_arange = torch.arange(seq_len, device=device).unsqueeze(0)
                 vision_mask = (seq_arange >= s_idx.unsqueeze(1)) & (seq_arange < e_idx.unsqueeze(1))
-
-                # 4. 构造 源位置（hard_prune_mask 空间）的 2D Mask 矩阵：形状 (B, max_vision_len)
                 max_vision_len = hard_prune_mask.shape[1]
-                sorter_arange = torch.arange(max_vision_len, device=device).unsqueeze(0)
-                valid_hard_prune_mask = sorter_arange < vision_token_nums.unsqueeze(1)
-
-                # 5. 并行提取和赋值
-                # 这步提取会把 batch 中所有真正的 vision 区域压扁成一个 1D Tensor 
-                # 长度等于这个 batch 里面所有图像的 vision token 总和
-                valid_sorter_values = hard_prune_mask[valid_hard_prune_mask]
-
-                # 赋值给 input_attn_mask 
-                # PyTorch 的高级索引会自动将这个 1D Tensor 按照 True 的位置填进去，实现完美对齐
+                sorter_arange = torch.arange(max_vision_len, device=device).unsqueeze(0)    # [1, max_vision_len]
+                valid_hard_prune_mask = sorter_arange < vision_token_nums.unsqueeze(1)      # [B, vision_token_seq]
+                valid_sorter_values = hard_prune_mask[valid_hard_prune_mask]                # [total_vision_seq_len, 1]
                 input_attn_mask[vision_mask] = valid_sorter_values
-
-                # 赋值给 pos_mask
-                # 原代码中 pos_mask[:, i, s_idx:e_idx] 表示第一维度会被广播
-                # pos_mask[:, vision_mask] 的 shape 会是 (N, total_vision_tokens)
-                # valid_sorter_values 是一维的 (total_vision_tokens,)，会自动广播给所有的 N 维
                 pos_mask[:, vision_mask] = valid_sorter_values
-
-                aux_outputs["logits_mask"] = input_attn_mask
-
                 batch_valid_counts = input_attn_mask.sum(dim=1) # [B]
                 max_seq_len = batch_valid_counts.max().item()
                 input_ids = reorganize_tensor(input_ids, (B, max_seq_len), pad_token_id, batch_valid_counts, input_attn_mask)
                 attention_mask = reorganize_tensor(attention_mask, (B, max_seq_len), 0, batch_valid_counts, input_attn_mask)
                 position_ids = reorganize_tensor(position_ids, (3, B, max_seq_len), 0, batch_valid_counts, pos_mask)
-                if labels is not None:
-                    labels = reorganize_tensor(labels, (B, max_seq_len), label_pad, batch_valid_counts, input_attn_mask)
-            else:
-                print("soft")
-                s_idx = (input_ids == vision_start_token_id).long().argmax(dim=1) + 1
-                e_idx = (input_ids == vision_end_token_id).long().argmax(dim=1)
-                vision_token_nums = e_idx - s_idx
-                vision_seq_lens = (image_grid_thw[:, 0] * image_grid_thw[:, 1] * image_grid_thw[:, 2]) // (self.vision_config.spatial_merge_size ** 2)
 
-                assert torch.equal(vision_seq_lens, vision_token_nums), "Vision tokens in input_ids have equal to image_grids"
-
-                B, seq_len = input_ids.shape
-                device = input_ids.device
-
+            elif soft_prune_mask is not None:
                 seq_arange = torch.arange(seq_len, device=device).unsqueeze(0)
                 vision_mask = (seq_arange >= s_idx.unsqueeze(1)) & (seq_arange < e_idx.unsqueeze(1))
 
@@ -1056,10 +1037,46 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
                 valid_hard_prune_mask = sorter_arange < vision_token_nums.unsqueeze(1)  # (B, vision_token_seq)
                 valid_sorter_values = soft_prune_mask[valid_hard_prune_mask].squeeze(-1) # (total_vision_seq_len, 1)
                 llm_prune_mask = torch.ones(attention_mask.shape, dtype=soft_prune_mask.dtype, device=attention_mask.device)
-                # 赋值给 input_attn_mask 
-                # PyTorch 的高级索引会自动将这个 1D Tensor 按照 True 的位置填进去，实现完美对齐
-                llm_prune_mask[vision_mask] = valid_sorter_values
 
+                llm_prune_mask[vision_mask] = valid_sorter_values
+                aux_outputs.update({"llm_prune_mask": llm_prune_mask})
+            
+            elif transform_matrices is not None:
+                new_pos_ids_list = []
+                seq_len = position_ids.shape[-1]
+                for i, trans_matrix in enumerate(transform_matrices):
+                    full_trans_matrix = expand_vis_transform_to_full(trans_matrix, seq_len, s_idx[i], e_idx[i]) # [S_new, S]
+                    new_position_ids = torch.matmul(full_trans_matrix, position_ids[:, i, :].to(full_trans_matrix.dtype).transpose(0, 1)).transpose(0, 1) # [3, S_new]
+                    new_pos_ids_list.append(new_position_ids)
+                position_ids = pad_sequence(new_pos_ids_list, batch_first=True).transpose(0, 1) # [3, B, S_new]
+                
+                filtered_lengths = aux_outputs["filtered_lengths"]  # [B]
+                max_vision_len = max(vision_token_nums).item()
+
+                input_attn_mask = torch.ones(
+                    input_ids.shape,
+                    device=input_ids.device,
+                    dtype=torch.bool,
+                ) # [B, S]
+                prune_mask = (
+                    torch.arange(max_vision_len, device=filtered_lengths.device)
+                    .unsqueeze(0)                                  # [1, max_vision_len]
+                    < filtered_lengths.unsqueeze(1)                # [B, 1]
+                ).to(device)                                   # 或者 .to(torch.bool)
+
+                seq_arange = torch.arange(seq_len, device=device).unsqueeze(0)
+                vision_mask = (seq_arange >= s_idx.unsqueeze(1)) & (seq_arange < e_idx.unsqueeze(1))
+                
+                sorter_arange = torch.arange(max_vision_len, device=device).unsqueeze(0)    # [1, max_vision_len]
+                valid_prune_mask = sorter_arange < vision_token_nums.unsqueeze(1)           # [B, max_vision_len]
+                valid_sorter_values = prune_mask[valid_prune_mask]                          # [total_vision_seq_len, 1]
+                input_attn_mask[vision_mask] = valid_sorter_values
+                batch_valid_counts = input_attn_mask.sum(dim=1) # [B]
+                max_seq_len = batch_valid_counts.max().item()
+                input_ids = reorganize_tensor(input_ids, (B, max_seq_len), pad_token_id, batch_valid_counts, input_attn_mask)
+                attention_mask = reorganize_tensor(attention_mask, (B, max_seq_len), 0, batch_valid_counts, input_attn_mask)
+
+                assert input_ids.shape[-1] == position_ids.shape[-1], "After transformation, position_ids should align with input_ids"
 
             if inputs_embeds is None:
                 if input_ids is None:
@@ -1077,13 +1094,15 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
         else:
             image_embeds = None
 
+        # endpoint for testing
         if self.pato_config.evaluate:
-            return aux_outputs["keep_ratio"]
+            return aux_outputs
+        
         # Call language model
         outputs = self.model(
             input_ids=None,
             attention_mask=attention_mask,
-            prune_mask=llm_prune_mask,
+            aux_outputs=aux_outputs,
             position_ids=position_ids,
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
@@ -1098,7 +1117,6 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
         loss = None
         # # TODO 对于batch_size等于1的情况，labels可以直接进行简单处理，而复杂情况需要另外考虑
         if self.training:
-            
             if labels is not None:
                 # Upcast to float if we need to compute the loss to avoid potential precision issues
                 logits = logits.float()

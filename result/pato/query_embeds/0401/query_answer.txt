@@ -1,0 +1,10 @@
+idx: 0  Query: The picture is on what?  Answer: counter
+idx: 1  Query: W  Answer: c
+idx: 2  Query: W  Answer: c
+idx: 3  Query: W  Answer: f
+idx: 4  Query: W  Answer: s
+idx: 5  Query: W  Answer: c
+idx: 6  Query: W  Answer: c
+idx: 7  Query: W  Answer: p
+idx: 8  Query: W  Answer: f
+idx: 9  Query: W  Answer: e

@@ -60,12 +60,7 @@ from dataclasses import dataclass, field, asdict
 from accelerate.utils import is_peft_model, set_seed
 
 
-from training.utils import (
-    norm_bboxes, 
-    extract_one_bbox_from_str, 
-    cal_paired_ious,
-    print_rank0
-)
+from training.utils import *
 """
     PATOScriptArgurment:
         保存数据集、训练集、图片目录、随机种子数、最大粉笔那缕、最大输入序列、最大输入保留序列等参数
@@ -134,6 +129,10 @@ class PATOTrainingArgument(TrainingArguments):
         default=0.25,
         metadata={"help": "Weight for rate loss."},
     )
+    kd_temperature: float = field(
+        default=2.0,
+        metadata={"help": "Temperature for knowledge distillation loss."},
+    )
 @dataclass
 class PATOModelConfig:
     model_name_or_path: Optional[str] = field(
@@ -142,6 +141,10 @@ class PATOModelConfig:
     )
     teacher_model_name_or_path: Optional[str] = field(
         default=None,
+        metadata={"help": "Model checkpoint for weights initialization."},
+    )
+    distill: Optional[bool] = field(
+        default=False,
         metadata={"help": "Model checkpoint for weights initialization."},
     )
     torch_dtype: Optional[str] = field(
@@ -162,6 +165,10 @@ class PATOModelConfig:
     token_sort_enable : bool = field(
         default=True,
         metadata={"help": "Whether to enable the visual token sort."}
+    )
+    token_sort_mode: str = field(
+        default="dynamic_token_sorter",
+        metadata={"help": "The method of token sorting. Options: 'dynamic_token_sorter','dynamic_token_sorter_v2', 'hard_token_sorter'."}
     )
 
 class TauAnnealingCallback(TrainerCallback):
@@ -196,14 +203,15 @@ class PATOTrainer(Trainer):
         ):
         super().__init__(*args, **kwargs)
         self.teacher = teacher_model
-        self.teacher.eval()
-        for param in self.teacher.parameters():
-            param.requires_grad = False
+        if self.teacher is not None:
+            self.teacher.eval()
+            for param in self.teacher.parameters():
+                param.requires_grad = False
         self.lambda_kd = self.args.lambda_kd
         self.lambda_distortion = self.args.lambda_distortion
         self.lambda_rate = self.args.lambda_rate
         self.target_rate = self.args.target_rate
-
+        self.kd_temperature = self.args.kd_temperature if hasattr(self.args, "kd_temperature") else 2.0
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """
@@ -220,22 +228,29 @@ class PATOTrainer(Trainer):
             if num_items_in_batch is not None:
                 loss_kwargs["num_items_in_batch"] = num_items_in_batch
             inputs = {**inputs, **loss_kwargs}
-        ### ========================= ###
-        ### output and teacher output ###
-        ### ========================= ###
+        query = inputs.pop("query", None)
+        if query is not None:
+            query_id = self.processing_class(
+                query,
+                padding=True,
+                truncation=True,
+                max_length=64,
+                return_tensors="pt",
+                add_special_tokens=False,
+            ).to(device=inputs["input_ids"].device)
+            inputs.update({
+                "query_input_ids": query_id.input_ids,
+                "query_attention_mask": query_id.attention_mask,
+            })
+        else:
+            raise NotImplementedError("Currently only supports models with 'query' input. Please modify the code to fit your model's input format.")
         outputs = model(
             **inputs,
             use_cache=False,
             return_dict=True,
         )
-        if self.teacher is not None:
-            with torch.no_grad():
-                teacher_outputs = self.teacher(
-                    **inputs, 
-                    use_cache=False,
-                    return_dict=True,
-                )
-
+        aux_outputs = outputs.aux_outputs
+        
         # Save past state if it exists
         # TODO: this needs to be fixed and made cleaner later.
         if self.args.past_index >= 0:
@@ -260,41 +275,69 @@ class PATOTrainer(Trainer):
                     "The model did not return a loss from the inputs, only the following keys: "
                     f"{','.join(outputs.keys())}. For reference, the inputs it received are {','.join(inputs.keys())}."
                 )
-            # We don't use .loss here since the model may return tuples instead of ModelOutput.
-            if teacher_outputs is not None:
-                T = 1.0
             
-                aux_outputs = outputs.aux_outputs
-                student_logits = outputs.logits
-                teacher_logits = teacher_outputs.logits
-                student_labels = inputs.get("labels", labels)
-                valid_token_mask = (student_labels != -100).view(-1)
-                student_logits = student_logits[0][valid_token_mask]
-                teacher_logits = teacher_logits[0][valid_token_mask]
-                student_log_probs = F.log_softmax(student_logits / T, dim=-1)   # [B, T, V]
-                teacher_probs = F.softmax(teacher_logits / T, dim=-1)   # [B, T, V]
-                
-                kl = F.kl_div(
-                    student_log_probs,
-                    teacher_probs,
-                    reduction="none"
-                ).sum(dim=-1)  # [B, T]
+            # -------------------------------------- #
+            #           LOSS 设计核心代码             #
+            # -------------------------------------- #
+            if self.teacher is not None:
+                labels = inputs["labels"]
 
-                kd_loss = kl.mean()
-                kd_loss = kd_loss * (T ** 2)
-                if self.state.max_steps > 0:
-                    progress = self.state.global_step / self.state.max_steps
-                else:
-                    progress = 0.0
-                self.target_rate_pre = self.target_rate + 0.5 * (1.0 - self.target_rate) * (
-                    1.0 + math.cos(math.pi * progress)
-                ) # 1 -> 0.25
+                # teacher 不需要 labels，省掉一份无用 CE
+                teacher_inputs = {k: v for k, v in inputs.items() if k != "labels"}
+                with torch.no_grad():
+                    teacher_logits = self.teacher(
+                        **teacher_inputs,
+                        use_cache=False,
+                        return_dict=True,
+                    ).logits
+                # 1. distortion loss
+                distortion_loss = outputs["loss"]
+                
+                # 2. knowledge distillation loss (logits kd loss and hidden_states kd loss)
+                T = self.kd_temperature  # 先试 2.0 或 4.0
+                student_logits = outputs.logits.float()
+                teacher_logits = teacher_logits.float()
+                # 和 CE 完全对齐
+                shift_student = student_logits[:, :-1, :].contiguous()
+                shift_teacher = teacher_logits[:, :-1, :].contiguous()
+                shift_labels = labels[:, 1:].contiguous()
+
+                valid = shift_labels.ne(-100)   # [B, T-1]
+
+                shift_student = shift_student[valid]   # [N_valid, V]
+                shift_teacher = shift_teacher[valid]   # [N_valid, V]
+
+                student_log_probs = F.log_softmax(shift_student / T, dim=-1)
+                teacher_log_probs = F.log_softmax(shift_teacher / T, dim=-1)
+                kd_loss = F.kl_div(
+                    student_log_probs,
+                    teacher_log_probs,
+                    reduction="batchmean",
+                    log_target=True,
+                ) * (T * T)
+                
+                # 弃用：温度缩放后 loss 过小，难以调节 lambda_kd 权重
+                # if self.state.max_steps > 0:
+                #     progress = self.state.global_step / self.state.max_steps
+                # else:
+                #     progress = 0.0
+                # self.target_rate_pre = self.target_rate + 0.5 * (1.0 - self.target_rate) * (
+                #     1.0 + math.cos(math.pi * progress)
+                # ) # 1 -> 0.25
+                
+                # 3. rate loss
+                keep_ratio = aux_outputs["keep_ratio"]
+                rate_loss = keep_ratio.mean(dim=0)
+                
+                loss = self.lambda_distortion * distortion_loss + self.lambda_kd * kd_loss + self.lambda_rate * rate_loss 
+                if self.state.global_step % 50 == 0:
+                    print_rank0(f"keep ratio: {keep_ratio}")
+                    print_rank0(f"Distortion Loss: {self.lambda_distortion * distortion_loss}, KD Loss: {self.lambda_kd * kd_loss}, Rate Loss: {self.lambda_rate * rate_loss[0]},  Loss: {loss[0]}")
+            else:
                 keep_ratio = aux_outputs["keep_ratio"]
                 rate_loss = keep_ratio.mean(dim=0)
                 distortion_loss = outputs["loss"]
-                loss = self.lambda_distortion * distortion_loss + self.lambda_kd * kd_loss + self.lambda_rate * rate_loss
-            else:
-                loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+                loss = self.lambda_distortion * distortion_loss + self.lambda_rate * rate_loss
             unwrapped_model = self.accelerator.unwrap_model(model)
         if (
             self.args.average_tokens_across_devices
@@ -302,9 +345,7 @@ class PATOTrainer(Trainer):
             and num_items_in_batch is not None
         ):
             loss *= self.accelerator.num_processes
-        if self.state.global_step % 100 == 0:
-            print_rank0(f"target ratio: {self.target_rate_pre}  keep ratio: {keep_ratio}")
-            print_rank0(f"Distortion Loss: {distortion_loss},  KD Loss: {kd_loss},  Rate Loss: {rate_loss[0]},  Loss: {loss[0]}")
+
         return (loss, outputs) if return_outputs else loss
     
 
@@ -324,397 +365,7 @@ class PATOTrainer(Trainer):
             print_rank0(f"✓ PATO components saved to {pato_save_path}")
 
 
-# ---------- Main ----------
 
-def patch_processor(processor):
-    if not hasattr(processor.tokenizer, "eos_token_id"):
-        eos_token = getattr(processor.tokenizer, "eos_token")
-        eos_token_id = processor.tokenizer.convert_tokens_to_ids(eos_token)
-        processor.tokenizer.eos_token_id = eos_token_id
-    print_rank0("eos_token_id:", processor.tokenizer.eos_token_id)
-    
-    if not hasattr(processor.tokenizer, "pad_token_id"):
-        processor.tokenizer.pad_token_id = processor.tokenizer.eos_token_id
-    print_rank0("pad_token_id:", processor.tokenizer.pad_token_id)
-    processor.tokenizer.padding_side = "left"
-
-def _init_pato_config(
-    base_model_config : Qwen2_5_VLConfig = None,
-    model_args: PATOModelConfig = None,
-):
-    vision_hidden_size = base_model_config.vision_config.hidden_size
-    text_hidden_size = base_model_config.hidden_size
-    # 配置PATO参数，对齐模型维度
-    pato_config : PATOConfig = create_default_pato_config(**asdict(model_args))
-    pato_config.g_raw.text_hidden_size = text_hidden_size
-    pato_config.projector.vision_hidden_size = vision_hidden_size
-    pato_config.projector.hidden_size = text_hidden_size
-    
-    pato_config.g_raw.enable = model_args.g_raw_enable
-    pato_config.token_sort.enable = model_args.token_sort_enable
-    pato_config.projector.enable = model_args.projector_enable
-    return pato_config
-
-def dump_param_freeze_status(model, filepath):
-    local_rank = int(os.getenv('LOCAL_RANK', '0'))
-    if local_rank == 0:
-        with open(filepath, "w") as f:
-            total = 0
-            trainable = 0
-
-            for name, p in model.named_parameters():
-                numel = p.numel()
-                total += numel
-                if p.requires_grad:
-                    trainable += numel
-
-                f.write(
-                    f"{name}\t"
-                    f"requires_grad={p.requires_grad}\t"
-                    f"shape={tuple(p.shape)}\t"
-                    f"numel={numel}\n"
-                )
-
-            f.write("\n")
-            f.write(f"TOTAL_NUMEL={total}\n")
-            f.write(f"TRAINABLE_NUMEL={trainable}\n")
-            f.write(f"TRAINABLE_RATIO={trainable / total:.6f}\n")
-
-def test_dataset(
-    dataset,
-    collator,
-):
-    print_rank0("============== Testing dataset ==============")
-    sampler = RepeatRandomSampler(
-        data_source=dataset,
-        mini_repeat_count=1,
-    )
-    loader = DataLoader(
-        dataset=dataset,
-        batch_size=1,
-        sampler=sampler,
-        collate_fn=collator,
-    )
-    for _, batch in enumerate(loader):
-        if batch["image_grid_thw"].shape[0] > 1:
-            print(batch)
-            return
-        input_ids = batch["input_ids"]
-        for input_id in input_ids:
-            e_idx = torch.where(input_id == 151653)
-            print("e_idx", e_idx)
-            if e_idx[0].numel() > 1:
-                print(batch)
-                return
-    print("done")
-    return
-
-def test_model(
-    model,
-    trainer,
-    train_dataset,
-    collator,
-    scorer_path="visual.token_sorter.token_scorer",  # 如果你的路径是 visual.token_sorter.token_scorer 可改
-    use_amp=False,  # 如果你训练是 AMP，这里仍建议先关掉做 debug
-):
-    """
-    核心测试：
-      - 取一个 batch
-      - 前向拿 distortion_loss / rate_loss
-      - 用 torch.autograd.grad 计算它们对 token_scorer 参数的梯度
-      - 输出每个参数来自各项 loss 的梯度强度与相似度
-    """
-    def _move_batch_to_device(batch, device):
-        """
-        支持 dict / list / tuple 的 batch，把 tensor 移到 device。
-        """
-        if torch.is_tensor(batch):
-            return batch.to(device)
-        if isinstance(batch, dict):
-            return {k: _move_batch_to_device(v, device) for k, v in batch.items()}
-        if isinstance(batch, (list, tuple)):
-            typ = type(batch)
-            return typ(_move_batch_to_device(v, device) for v in batch)
-        return batch
-
-
-    def _extract_losses_from_outputs(outputs):
-        """
-        从 model(**batch) 的输出里取 distortion_loss / rate_loss。
-        你可以按你项目实际输出结构微调这里。
-
-        支持几种常见形式：
-        1) outputs 是 dict，含 'distortion_loss' / 'rate_loss'
-        2) outputs 是 dict，含 'aux_outputs'，其中含 'rate_loss'
-        3) outputs 是 tuple/list，最后一个元素可能是 dict aux_outputs
-        """
-        distortion_loss = None
-        rate_loss = None
-
-        # dict
-        if isinstance(outputs, dict):
-            if "aux_outputs" in outputs and isinstance(outputs["aux_outputs"], dict):
-                aux = outputs["aux_outputs"]
-                if "rate_loss" in aux:
-                    rate_loss = aux["rate_loss"]
-                elif "keep_ratio" in aux:
-                    rate_loss = aux["keep_ratio"].sum()
-                if "distortion_loss" in aux:
-                    distortion_loss = aux["distortion_loss"]
-                else:
-                    distortion_loss = outputs["loss"]
-
-        return distortion_loss, rate_loss
-
-
-    def _safe_zero_grad(model, optimizer=None):
-        if optimizer is not None:
-            optimizer.zero_grad(set_to_none=True)
-        else:
-            for p in model.parameters():
-                p.grad = None
-
-
-    @torch.no_grad()
-    def _print_param_grad_summary(grads_by_name, title):
-        """
-        grads_by_name: {name: grad_tensor_or_None}
-        """
-        print("\n" + "=" * 80)
-        print(title)
-        print("=" * 80)
-        for n, g in grads_by_name.items():
-            if g is None:
-                print(f"{n:60s}  NO_GRAD")
-            else:
-                mean_abs = float(g.abs().mean().cpu())
-                norm = float(g.norm().cpu())
-                mx = float(g.abs().max().cpu())
-                print(f"{n:60s}  norm={norm:.3e}  mean_abs={mean_abs:.3e}  max_abs={mx:.3e}")
-
-
-    def _cosine(a, b):
-        if a is None or b is None:
-            return 0.0
-        a = a.flatten()
-        b = b.flatten()
-        denom = (a.norm() * b.norm()).clamp_min(1e-12)
-        return float((a @ b) / denom)
-    
-    device = next(model.parameters()).device
-    model.train()
-
-    # 1) 取 batch
-    if hasattr(trainer, "get_train_dataloader"):
-        data_loader = trainer.get_train_dataloader()
-        batch = next(iter(data_loader))
-    else:
-        data_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, collate_fn=collator)
-        batch = next(iter(data_loader))
-
-    # 2) 拿 lambda 系数
-    lam_d = 1.0
-    lam_r = 1.0
-    
-
-    # 3) 定位 token_scorer 参数
-    # 支持 scorer_path 的两种情况：
-    # - 直接 model.token_sorter.token_scorer
-    # - model.visual.token_sorter.token_scorer 等
-    def _get_submodule(root, path: str):
-        cur = root
-        for part in path.split("."):
-            cur = getattr(cur, part)
-        return cur
-
-    try:
-        token_scorer = _get_submodule(model, scorer_path)
-    except Exception as e:
-        raise RuntimeError(
-            f"找不到 scorer_path='{scorer_path}' 对应的模块。"
-            f"请改成你的真实路径，比如 'visual.token_sorter.token_scorer'。原错误: {e}"
-        )
-
-    scorer_named_params = list(token_scorer.named_parameters())
-    scorer_params = [p for _, p in scorer_named_params]
-    assert scorer_params is not None, "scorer_params is none"
-    # 4) 前向得到 outputs
-    # 兼容 trainer.compute_loss
-    distortion_loss = None
-    rate_loss = None
-
-    if hasattr(trainer, "compute_loss"):
-        # 许多 trainer.compute_loss(model, inputs, return_outputs=True)
-        try:
-            # 尽量拿 return_outputs=True
-            out = trainer.compute_loss(model, batch, return_outputs=True)
-            # out 可能是 (loss, outputs)
-            if isinstance(out, (tuple, list)) and len(out) == 2:
-                _, outputs = out
-            else:
-                outputs = out
-            distortion_loss, rate_loss = _extract_losses_from_outputs(outputs)
-        except TypeError:
-            # compute_loss 签名不一样，fallback 用 model(**batch)
-            outputs = model(**batch) if isinstance(batch, dict) else model(batch)
-            distortion_loss, rate_loss = _extract_losses_from_outputs(outputs)
-    else:
-        outputs = model(**batch) if isinstance(batch, dict) else model(batch)
-        distortion_loss, rate_loss = _extract_losses_from_outputs(outputs)
-
-    if distortion_loss is None or rate_loss is None:
-        raise RuntimeError(
-            "无法从一次 forward 输出中同时提取 distortion_loss 和 rate_loss。\n"
-            "请在 _extract_losses_from_outputs() 里按你的项目输出结构补齐字段路径，"
-            "或让 model/outputs 显式返回这两个 loss。"
-        )
-
-    # 5) 用 autograd.grad 拆分梯度来源
-    # 注意：不用 backward，不污染 .grad，更适合 debug
-    # retain_graph=True 是为了同一个 forward 图上算两次 grad
-    if use_amp and torch.cuda.is_available():
-        # debug 时建议关 AMP；如果必须，用 autocast 包住前向，但这里我们已做过前向
-        pass
-    def safe_autograd_grad(loss, params, name, retain_graph):
-        if not torch.is_tensor(loss) or not loss.requires_grad:
-            print(f"[SKIP] {name} is not differentiable: "
-                f"type={type(loss)}, requires_grad={getattr(loss,'requires_grad',None)}, grad_fn={getattr(loss,'grad_fn',None)}")
-            return [None for _ in params]
-        return torch.autograd.grad(loss, params, retain_graph=retain_graph, allow_unused=True)
-    g_dist = safe_autograd_grad(
-        lam_d * distortion_loss,
-        scorer_params,
-        "distortion_loss",
-        retain_graph=True,
-    )
-    g_rate = safe_autograd_grad(
-        lam_r * rate_loss,
-        scorer_params,
-        "rate_loss",
-        retain_graph=True,
-    )
-    g_total = safe_autograd_grad(
-        lam_d * distortion_loss + lam_r * rate_loss,
-        scorer_params,
-        "loss",
-        retain_graph=False,
-    )
-
-    # 6) 组织输出
-    dist_by_name = {}
-    rate_by_name = {}
-    total_by_name = {}
-    for (n, _), gd, gr, gt in zip(scorer_named_params, g_dist, g_rate, g_total):
-        dist_by_name[n] = None if gd is None else gd.detach()
-        rate_by_name[n] = None if gr is None else gr.detach()
-        total_by_name[n] = None if gt is None else gt.detach()
-
-    _print_param_grad_summary(dist_by_name, f"[token_scorer] grad from lambda_distortion * distortion_loss (lambda={lam_d})")
-    _print_param_grad_summary(rate_by_name, f"[token_scorer] grad from lambda_rate * rate_loss (lambda={lam_r})")
-    _print_param_grad_summary(total_by_name, "[token_scorer] grad from total loss")
-
-    # 7) 打印每个参数：谁贡献更大 + cosine 相似度（是否冲突/抵消）
-    print("\n" + "-" * 80)
-    print("Per-parameter attribution (norms + cosine similarity)")
-    print("-" * 80)
-    for (n, _), gd, gr, gt in zip(scorer_named_params, g_dist, g_rate, g_total):
-        dn = 0.0 if gd is None else float(gd.norm().detach().cpu())
-        rn = 0.0 if gr is None else float(gr.norm().detach().cpu())
-        tn = 0.0 if gt is None else float(gt.norm().detach().cpu())
-        c_td = _cosine(gt.detach() if gt is not None else None, gd.detach() if gd is not None else None)
-        c_tr = _cosine(gt.detach() if gt is not None else None, gr.detach() if gr is not None else None)
-        c_dr = _cosine(gd.detach() if gd is not None else None, gr.detach() if gr is not None else None)
-
-        dominant = "rate" if rn > dn else "distortion"
-        print(
-            f"{n:30s}  ||dist||={dn:.3e}  ||rate||={rn:.3e}  ||total||={tn:.3e}  "
-            f"dom={dominant:10s}  cos(total,dist)={c_td:+.3f}  cos(total,rate)={c_tr:+.3f}  cos(dist,rate)={c_dr:+.3f}"
-        )
-
-    print("\nDone.")
-    
-def evaluate_batch(model, train_dataloader, processor):
-    for batch in train_dataloader:
-        model.eval()
-        
-        # ==========================================
-        # 1. 计算 Loss (前向传播)
-        # ==========================================
-        with torch.no_grad():
-            outputs = model(
-                **batch,
-                use_cache=False,
-                return_dict=True,
-            )
-        loss = outputs.loss.item() if outputs.loss is not None else "N/A"
-        print("loss:", loss)
-
-        # 假设 batch size = 1
-        input_ids = batch["input_ids"][0]
-        labels = batch["labels"][0]
-
-        # ==========================================
-        # 2. 找到 Prompt 和 Answer 的分界线
-        # labels 中非 -100 的第一个位置，就是模型回答的起点
-        # ==========================================
-        valid_indices = (labels != -100).nonzero(as_tuple=True)[0]
-        if len(valid_indices) == 0:
-            print("Warning: No valid labels found in this batch.")
-            continue
-            
-        # 找到答案的起始位置
-        prompt_end_idx = valid_indices[0].item()
-
-        # 提取真正的 Query 和 Target 文本
-        query_ids = input_ids[:prompt_end_idx]
-        query_text = processor.tokenizer.decode(query_ids, skip_special_tokens=True)
-        
-        # 只提取非 -100 的标签部分
-        target_ids = labels[labels != -100]
-        target_text = processor.tokenizer.decode(target_ids, skip_special_tokens=True)
-
-        # ==========================================
-        # 3. 让模型完整自由生成 (Auto-regressive Generation)
-        # ==========================================
-        # 准备生成所需的输入：把答案截断，只给模型喂 Prompt 部分
-        gen_inputs = {}
-        for k, v in batch.items():
-            if k in ["input_ids", "attention_mask"]:
-                gen_inputs[k] = v[:, :prompt_end_idx]
-            elif k != "labels":
-                # 保留其它多模态参数（如 VLM 需要的 pixel_values 等）
-                gen_inputs[k] = v
-
-        pad_token_id = processor.tokenizer.pad_token_id if processor.tokenizer.pad_token_id is not None else processor.tokenizer.eos_token_id
-
-        with torch.no_grad():
-            generated_ids = model.generate(
-                **gen_inputs,
-                max_new_tokens=50,           # 允许生成的最大长度（根据需要调整）
-                pad_token_id=pad_token_id,
-                eos_token_id=processor.tokenizer.eos_token_id,
-                do_sample=False,             # 贪心解码，保证测试的确定性
-                use_cache=True
-            )
-
-        # ==========================================
-        # 4. 提取模型新生成的部分并解码
-        # generated_ids 包含了 [Prompt + 新预测的文本]
-        # ==========================================
-        new_token_ids = generated_ids[0][prompt_end_idx:]
-        pred_text = processor.tokenizer.decode(new_token_ids, skip_special_tokens=True)
-
-        # 输出结果
-        print("-" * 50)
-        print(f"Query (Input): \n{query_text.strip()}\n")
-        print(f"Target Label (Ground Truth): \n{target_text.strip()}\n")
-        print(f"Model Prediction (Full Generation): \n{pred_text.strip()}\n")
-        print("-" * 50)
-        
-        # 如果只想打印第一个 batch 进行观测，可以使用 break
-        # break 
-        
-    return
 
 def main():
     """主训练函数"""
@@ -730,7 +381,7 @@ def main():
 
     model_path = model_args.model_name_or_path
     base_model_config = Qwen2_5_VLConfig.from_pretrained(model_path)
-    pato_config = _init_pato_config(base_model_config, model_args)
+    pato_config = init_pato_config(base_model_config, model_args)
     config = PATOQwen2_5_VLConfig(
         pato_config,
         **base_model_config.to_dict()
@@ -749,20 +400,26 @@ def main():
     print_rank0("\n" + "="*60)
     print_rank0("Initializing Teacher Model")
     print_rank0("="*60)
-    teacher_model_path = model_args.teacher_model_name_or_path
-    teacher_model_config = Qwen2_5_VLConfig.from_pretrained(teacher_model_path)
-    teacher_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        teacher_model_path,
-        config=teacher_model_config,
-        device_map="cuda",
-        attn_implementation='flash_attention_2',
-        torch_dtype=model_args.torch_dtype
-    )
-    pato_state_dict = None
+    teacher_model_config = model_args.teacher_model
+    if teacher_model_config.enable:
+        print_rank0("Distillation enabled. Loading teacher model...")
+        teacher_model_path = teacher_model_config.teacher_model_name_or_path
+        teacher_model_config = Qwen2_5_VLConfig.from_pretrained(teacher_model_path)
+        teacher_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            teacher_model_path,
+            config=teacher_model_config,
+            device_map="cuda",
+            attn_implementation='flash_attention_2',
+            torch_dtype=model_args.torch_dtype
+        )
+    else:
+        teacher_model = None
+    
     # pato_state_dict_path = "output/qwen2_5_3b_pato/pato_components.pt"
     if script_args.resume:
         raise NotImplementedError("Resume from checkpoint is not implemented yet.")
-    model.load_pato_components(pato_state_dict=pato_state_dict,)
+    else: 
+        model.load_pato_components()
     # dump_param_freeze_status(model, training_args.output_dir)
 
     # ------------ loading training dataset ------------ #
@@ -797,8 +454,8 @@ def main():
     # evaluate_batch(model, train_dataloader, processor)
     # return
     # test model
-    test_model(model=model, trainer=trainer, train_dataset=train_dataset, collator=collator)
-    return
+    # test_model(model=model, trainer=trainer, train_dataset=train_dataset, collator=collator)
+    # return
     # ------------ Training ------------ #
     # 训练循环
     print_rank0("\n" + "="*60)

@@ -46,8 +46,8 @@ for i in "${!configs[@]}"; do
         echo "Training failed for config: $config"
         continue
     fi
-    # bash CUDA_VISIBLE_DEVICES=3 ./test_tokens_ratio.sh
-    # bash ./training/eval_pato.sh  
+    bash ./tests/test_tokens_ratio.sh
+    bash ./training/eval_pato.sh  
     # BASE_MODEL=$base_model bash scripts/infer_qwen_pato_cot.sh $output_dir
     # BASE_MODEL=$base_model DO_GLIMPSE=1 bash scripts/infer_qwen_pato_cot.sh $output_dir
     # BASE_MODEL=$base_model MAX_REMAIN_RATIO=0.111 bash scripts/infer_qwen_pato_cot.sh $output_dir

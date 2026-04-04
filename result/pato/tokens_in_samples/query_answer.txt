@@ -1,0 +1,30 @@
+idx: 0  Query: The picture is on what?  Answer: counter
+idx: 1  Query: What cooking utensil is round?  Answer: pan
+idx: 2  Query: The light post is on what?  Answer: pole
+idx: 3  Query: What animal is standing?  Answer: polar bear
+idx: 4  Query: What animal is in front of the bench that is made of wood?  Answer: dog
+idx: 5  Query: What is the person to the right of the ball holding?  Answer: racket
+idx: 6  Query: What kind of furniture sits on the deck?  Answer: chair
+idx: 7  Query: Which kind of fast food is on the dish?  Answer: pizza
+idx: 8  Query: What is the bird painted on?  Answer: vase
+idx: 9  Query: What is in front of the vehicle that is to the right of the fence?  Answer: motorcycle
+idx: 10  Query: What is the woman in front of?  Answer: bushes
+idx: 11  Query: Which kind of vehicle is the skyscraper behind of?  Answer: train
+idx: 12  Query: Who is wearing a hat?  Answer: woman
+idx: 13  Query: Who is wearing the eye glasses?  Answer: man
+idx: 14  Query: What animal is small?  Answer: calf
+idx: 15  Query: Which kind of device is the man holding?  Answer: cell phone
+idx: 16  Query: What vehicles are to the left of the fence?  Answer: cars
+idx: 17  Query: What's lying on the bed?  Answer: blanket
+idx: 18  Query: Who do you think is on the bench?  Answer: man
+idx: 19  Query: What are the flowers on?  Answer: table
+idx: 20  Query: What animal is sitting?  Answer: dog
+idx: 21  Query: What kind of aircraft is flying in the sky?  Answer: jet
+idx: 22  Query: What animal is walking through the grass?  Answer: zebra
+idx: 23  Query: What kind of vehicle is to the left of the van?  Answer: bus
+idx: 24  Query: Who wears the jacket?  Answer: child
+idx: 25  Query: Which kind of food is the tag on?  Answer: sandwich
+idx: 26  Query: What kind of furniture is not large?  Answer: chair
+idx: 27  Query: What is the man wearing?  Answer: glove
+idx: 28  Query: Who is wearing glasses?  Answer: man
+idx: 29  Query: What is the speaker on?  Answer: platform

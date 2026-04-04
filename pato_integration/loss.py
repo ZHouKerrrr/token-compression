@@ -1,15 +1,142 @@
-"""PATO Loss Functions
-
-This module implements loss functions for training PATO components:
-1. Feature Distillation Loss: Bridge g_raw output with standard downsampling
-2. Token Sort Regularization Loss: Encourage efficient token selection
-3. Contrastive Loss: Learn query-conditional representations
+"""
+TODO 需要把所有的loss 都集成进来
 """
 
 from typing import Dict, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+import torch
+
+
+class RateLoss(nn.Module):
+    """Loss to encourage the token selection to meet a target budget"""
+    
+    def __init__(self, lambda_rate: float = 0.01):
+        super().__init__()
+        self.lambda_rate = lambda_rate
+    
+    def forward(self, keep_ratio: torch.Tensor) -> torch.Tensor:
+        """Compute rate loss
+        
+        Args:
+            keep_prob: Soft probabilities of keeping tokens [B, N]
+            
+        Returns:
+            Rate loss
+        """
+        loss = keep_ratio
+        
+        return loss * self.lambda_rate
+
+class KDLoss(nn.Module):
+    """Feature distillation loss module"""
+    
+    def __init__(
+        self, 
+        temperature: float = 1.0,
+        lambda_kd: float = 1.0
+    ):
+        super().__init__()
+        self.temperature = temperature
+        self.lambda_kd = lambda_kd
+
+    def forward(
+        self,
+        student_logits: torch.Tensor,
+        teacher_logits: torch.Tensor,
+        valid_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Compute KL divergence distillation loss
+        
+        Args:
+            student_logits: Student model logits [B, N, V]
+            teacher_logits: Teacher model logits [B, N, V]
+            valid_mask: Optional mask for valid token positions [B, N]
+        Returns:
+            Distillation loss
+        """
+        if valid_mask is not None:
+            # Mask out invalid positions
+            student_logits = student_logits[valid_mask]
+            teacher_logits = teacher_logits[valid_mask]
+            
+        student_log_probs = F.log_softmax(student_logits / self.temperature, dim=-1)
+        teacher_log_probs = F.log_softmax(teacher_logits / self.temperature, dim=-1)
+
+        kd_loss = F.kl_div(
+            student_log_probs,
+            teacher_log_probs,
+            reduction="batchmean",
+            log_target=True,
+        ) * (self.temperature ** 2)
+
+        return self.lambda_kd * kd_loss
+
+class TokensSamplerRegularizationLoss(nn.Module):
+    def __init__(self, lambda_compact: float = 0.01, lambda_tv: float = 0.01):
+        super().__init__()
+        self.lambda_compact = lambda_compact
+        self.lambda_tv = lambda_tv
+
+    def forward(
+        self, 
+        soft_scores: torch.Tensor,
+        image_grid_thw: torch.LongTensor,
+        spatial_merge_size: int = 2,
+        lambda_compact: float = 1.0,
+        lambda_tv: float = 1.0,
+        eps: float = 1e-6,
+    )-> torch.Tensor:
+        """
+        soft_scores: [B, N] or [B, N, 1], soft mask / probabilities before hard top-k
+        image_grid_thw: [B, 3] = (T, H, W)
+        returns:
+            loss_compact, loss_tv
+        """
+        if soft_scores.dim() == 3:
+            soft_scores = soft_scores.squeeze(-1)
+
+        B = soft_scores.size(0)
+        device = soft_scores.device
+
+        compact_losses = []
+        tv_losses = []
+
+        for b in range(B):
+            t = int(image_grid_thw[b, 0].item())
+            h = int(image_grid_thw[b, 1].item()) // spatial_merge_size
+            w = int(image_grid_thw[b, 2].item()) // spatial_merge_size
+
+            n = t * h * w
+            s = soft_scores[b, :n].float().reshape(t, h, w).clamp_min(0.0)
+
+            p = s / s.sum().clamp_min(eps)
+
+            yy = torch.linspace(-1.0, 1.0, h, device=device).view(1, h, 1)
+            xx = torch.linspace(-1.0, 1.0, w, device=device).view(1, 1, w)
+
+            mu_x = (p * xx).sum()
+            mu_y = (p * yy).sum()
+
+            compact = (p * ((xx - mu_x) ** 2 + (yy - mu_y) ** 2)).sum()
+
+            # TV smoothness
+            tv = 0.0
+            if h > 1:
+                tv = tv + (s[:, 1:, :] - s[:, :-1, :]).abs().mean()
+            if w > 1:
+                tv = tv + (s[:, :, 1:] - s[:, :, :-1]).abs().mean()
+            if t > 1:
+                tv = tv + 0.3 * (s[1:, :, :] - s[:-1, :, :]).abs().mean()
+
+            compact_losses.append(compact)
+            tv_losses.append(tv)
+
+        loss_compact = torch.stack(compact_losses).mean() * lambda_compact
+        loss_tv = torch.stack(tv_losses).mean() * lambda_tv
+        return (loss_compact + loss_tv)
 
 
 class PATOLoss(nn.Module):
@@ -24,24 +151,31 @@ class PATOLoss(nn.Module):
     
     def __init__(
         self,
-        lambda_distill: float = 0.05,
-        lambda_sort_reg: float = 0.01,
-        lambda_contrast: float = 0.1,
-        lambda_g_raw_reg: float = 0.001,
+        loss_config: Optional[Dict],
     ):
         super().__init__()
-        
-        self.lambda_distill = lambda_distill
-        self.lambda_sort_reg = lambda_sort_reg
-        self.lambda_contrast = lambda_contrast
-        self.lambda_g_raw_reg = lambda_g_raw_reg
-    
+        self.kd_logits_loss_fct = KDLoss(
+            temperature=loss_config.get("temperature_kd_logits", 2.0),
+            lambda_kd=loss_config.get("lambda_kd_logits", 0.5)
+        )
+        self.kd_feature_loss_fct = KDLoss(
+            temperature=loss_config.get("temperature_kd_feature", 2.0),
+            lambda_kd=loss_config.get("lambda_kd_feature", 0.5)
+        )
+        self.reg_loss_fct = TokensSamplerRegularizationLoss(
+            lambda_compact=loss_config.get("lambda_compact", 0.01),
+            lambda_tv=loss_config.get("lambda_tv", 0.01)
+        )
+        self.rate_loss_fct = RateLoss(
+            lambda_rate=loss_config.get("lambda_rate", 0.4)
+        )
+        self.lambda_distortion = loss_config.get("lambda_distortion", 0.01)
+
     def forward(
         self,
-        lm_loss: torch.Tensor,
-        aux_outputs: Optional[Dict] = None,
-        g_raw_module: Optional[nn.Module] = None,
-        token_sorter: Optional[nn.Module] = None,
+        inputs: Dict[str, torch.Tensor],
+        students_outputs: Optional[Dict],
+        teacher_outputs: Optional[Dict],
     ) -> Dict[str, torch.Tensor]:
         """Compute complete PATO loss
         
@@ -54,200 +188,51 @@ class PATOLoss(nn.Module):
         Returns:
             Dictionary of loss terms
         """
-        losses = {'lm_loss': lm_loss}
+        losses = {}
+        aux_outputs = students_outputs.get("aux_outputs", None)
+
+        if students_outputs is not None:
+            losses['task_loss'] = self.lambda_distortion * students_outputs['loss']
         
-        if aux_outputs is None:
-            losses['total_loss'] = lm_loss
-            return losses
+        if self.kd_loss_fct is not None and teacher_outputs is not None:
+            student_logits = students_outputs.get("student_logits", None)
+            teacher_logits = teacher_outputs.get("teacher_logits", None)
+            student_hidden_states = students_outputs.get("hidden_states", None)
+            teacher_hidden_states = teacher_outputs.get("hidden_states", None)
+            
+            labels = inputs["labels"]
+            shift_labels = labels[:, 1:].contiguous()
+            valid = shift_labels.ne(-100)   # [B, T-1]
+            if student_logits is not None and teacher_logits is not None:
+                shift_student_logits = student_logits[:, :-1, :].contiguous()
+                shift_teacher_logits = teacher_logits[:, :-1, :].contiguous()
+            
+                kd_logits_loss = self.kd_loss_fct(shift_student_logits, shift_teacher_logits, valid)
+                losses['kd_logits_loss'] = kd_logits_loss
+            
+            if student_hidden_states is not None and teacher_hidden_states is not None:
+                shift_student = student_hidden_states[:, :-1, :].contiguous()
+                kd_feature_loss = self.kd_loss_fct(shift_student, teacher_hidden_states)
+                losses['kd_feature_loss'] = kd_feature_loss
+
         
-        # ============================================================
-        # Feature Distillation Loss (g_raw)
-        # ============================================================
-        if 'original_pixel_values' in aux_outputs and 'compressed_pixel_values' in aux_outputs:
-            distill_loss = self.compute_distillation_loss(
-                original_images=aux_outputs['original_pixel_values'],
-                compressed_images=aux_outputs['compressed_pixel_values']
-            )
-            losses['distill_loss'] = distill_loss * self.lambda_distill
+        if self.reg_loss_fct is not None and students_outputs is not None:
+            soft_scores = students_outputs.get("soft_scores", None)
+            image_grid_thw = students_outputs.get("image_grid_thw", None)
+            if soft_scores is not None and image_grid_thw is not None:
+                reg_loss = self.reg_loss_fct(soft_scores, image_grid_thw)
+                losses['regularization_loss'] = reg_loss
         
-        # ============================================================
-        # g_raw Regularization Loss
-        # ============================================================
-        if g_raw_module is not None and 'compressed_pixel_values' in aux_outputs:
-            try:
-                g_raw_reg = g_raw_module.compute_regularization_loss(
-                    images=aux_outputs['original_pixel_values'],
-                    compressed_images=aux_outputs['compressed_pixel_values'],
-                    text_embeddings=aux_outputs.get('query_embeds', None)
-                )
-                
-                for key, value in g_raw_reg.items():
-                    losses[f'g_raw_{key}'] = value * self.lambda_g_raw_reg
-            except Exception as e:
-                print(f"Warning: Could not compute g_raw regularization: {e}")
-        
-        # ============================================================
-        # Token Sort Regularization Loss
-        # ============================================================
-        if token_sorter is not None and aux_outputs:
-            try:
-                sort_loss = token_sorter.compute_budget_loss(aux_outputs)
-                losses['sort_reg_loss'] = sort_loss * self.lambda_sort_reg
-            except Exception as e:
-                print(f"Warning: Could not compute token sort loss: {e}")
-        
-        # ============================================================
-        # Total Loss
-        # ============================================================
-        total_loss = sum(losses.values())
-        losses['total_loss'] = total_loss
+        if self.rate_loss_fct is not None:
+            keep_ratio = aux_outputs.get("keep_ratio", None)
+            if keep_ratio is not None:
+                rate_loss = self.rate_loss_fct(keep_ratio)
+                losses['rate_loss'] = rate_loss
         
         return losses
-    
-    @staticmethod
-    def compute_distillation_loss(
-        original_images: torch.Tensor,
-        compressed_images: torch.Tensor,
-        feature_extractor: Optional[nn.Module] = None
-    ) -> torch.Tensor:
-        """Compute feature distillation loss
-        
-        This loss encourages the compressed image to preserve important
-        visual features from the original image.
-        
-        Args:
-            original_images: Original images [B, C, H, W]
-            compressed_images: Compressed images [B, C, H', W']
-            feature_extractor: Optional feature extractor (uses raw pixels if None)
-            
-        Returns:
-            Distillation loss
-        """
-        if feature_extractor is not None:
-            # Extract features
-            with torch.no_grad():
-                original_features = feature_extractor(original_images)
-            compressed_features = feature_extractor(compressed_images)
-            
-            # MSE loss
-            loss = F.mse_loss(compressed_features, original_features)
-        else:
-            # Simple pixel-level loss with resizing
-            # Resize original to compressed size
-            B, C, H_comp, W_comp = compressed_images.shape
-            original_resized = F.interpolate(
-                original_images,
-                size=(H_comp, W_comp),
-                mode='bilinear',
-                align_corners=False
-            )
-            
-            # MSE loss on resized
-            loss = F.mse_loss(compressed_images, original_resized)
-        
-        return loss
-    
-    @staticmethod
-    def compute_contrastive_loss(
-        features: torch.Tensor,
-        query_embeds: torch.Tensor,
-        temperature: float = 0.07,
-    ) -> torch.Tensor:
-        """Compute contrastive loss for query-conditional learning
-        
-        This loss encourages features to be similar for the same query
-        and different for different queries.
-        
-        Args:
-            features: Visual features [B, D]
-            query_embeds: Query embeddings [B, D]
-            temperature: Temperature for softmax
-            
-        Returns:
-            Contrastive loss
-        """
-        # Normalize
-        features = F.normalize(features, dim=1)
-        query_embeds = F.normalize(query_embeds, dim=1)
-        
-        # Compute similarity matrix
-        logits = torch.matmul(features, query_embeds.T) / temperature  # [B, B]
-        
-        # Labels: diagonal elements are positive pairs
-        labels = torch.arange(features.shape[0], device=features.device)
-        
-        # Symmetric loss
-        loss_i = F.cross_entropy(logits, labels)
-        loss_t = F.cross_entropy(logits.T, labels)
-        
-        loss = (loss_i + loss_t) / 2
-        
-        return loss
-
-
-class DistillationLoss(nn.Module):
-    """Feature distillation loss module"""
-    
-    def __init__(self, temperature: float = 1.0):
-        super().__init__()
-        self.temperature = temperature
-    
-    def forward(
-        self,
-        student_logits: torch.Tensor,
-        teacher_logits: torch.Tensor,
-    ) -> torch.Tensor:
-        """Compute KL divergence distillation loss
-        
-        Args:
-            student_logits: Student model logits [B, N, V]
-            teacher_logits: Teacher model logits [B, N, V]
-            
-        Returns:
-            Distillation loss
-        """
-        # Apply temperature
-        student_probs = F.log_softmax(student_logits / self.temperature, dim=-1)
-        teacher_probs = F.softmax(teacher_logits / self.temperature, dim=-1)
-        
-        # KL divergence
-        loss = F.kl_div(
-            student_probs,
-            teacher_probs,
-            reduction='batchmean'
-        ) * (self.temperature ** 2)
-        
-        return loss
-
-
-class BudgetRegularizationLoss(nn.Module):
-    """Budget regularization loss to encourage token efficiency"""
-    
-    def __init__(self, target_budget: int, lambda_budget: float = 0.01):
-        super().__init__()
-        self.target_budget = target_budget
-        self.lambda_budget = lambda_budget
-    
-    def forward(self, num_tokens: torch.Tensor) -> torch.Tensor:
-        """Penalize deviation from target budget
-        
-        Args:
-            num_tokens: Number of selected tokens [B] or scalar
-            
-        Returns:
-            Budget loss
-        """
-        if isinstance(num_tokens, int):
-            num_tokens = torch.tensor(num_tokens, dtype=torch.float32)
-        
-        # L1 loss from target
-        loss = torch.abs(num_tokens - self.target_budget).mean()
-        
-        return loss * self.lambda_budget
-
 
 # Helper function
-def create_pato_loss(config) -> PATOLoss:
+def create_pato_loss(loss_config) -> PATOLoss:
     """Create PATO loss from config
     
     Args:
@@ -256,11 +241,7 @@ def create_pato_loss(config) -> PATOLoss:
     Returns:
         PATOLoss instance
     """
-    return PATOLoss(
-        lambda_distill=config.lambda_distill,
-        lambda_sort_reg=config.lambda_sort_reg,
-        lambda_contrast=config.lambda_contrast,
-    )
+    return PATOLoss(loss_config)
 
 
 __all__ = [

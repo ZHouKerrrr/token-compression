@@ -9,26 +9,26 @@ echo "Number of GPUs: $ngpus"
 
 export LMMS_EVAL_PLUGINS="my_lmms_eval"
 
-base_model=${BASE_MODEL:-'Qwen/Qwen2.5-VL-3B-Instruct'}
+base_model=${BASE_MODEL:-'Qwen/Qwen2.5-VL-7B-Instruct'}
 base_model_suffix='pato'
 base_output_path=${BASE_OUTPUT_PATH:-"result/${base_model_suffix}/lmms_eval"}
 port=${PORT:-29500}
 attn_implementation=${ATTN_IMPL:-"flash_attention_2"}
 
-config="train_configs/qwen2_5_3b_pato/qwen2_5_3b_pato.yaml"
+config="train_configs/qwen2_5_7b_pato/qwen2_5_7b_pato.yaml"
 
 
 eval_list=( \
 "vqav2_val_lite" \
-# "gqa" \
-# "vizwiz_vqa_val" \
-# "scienceqa_img" \
-# "pope" \
-# "mme" \
-# "mmbench_en_test" \
-# "mmbench_cn_test" \
-# "seedbench" \
-# "vstar_bench" \
+"scienceqa_img" \
+"pope" \
+"mme" \
+"mmbench_en_test" \
+"mmbench_cn_test" \
+"seedbench" \
+"vstar_bench" \
+"gqa" \
+"vizwiz_vqa_val" \
 )
 
 for task in ${eval_list[@]}
@@ -49,8 +49,3 @@ do
         --output_path $output_path \
         --log_samples
 done
-
-
-
-
-

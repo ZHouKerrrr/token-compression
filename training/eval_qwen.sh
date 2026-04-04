@@ -9,7 +9,7 @@ echo "Number of GPUs: $ngpus"
 
 export LMMS_EVAL_PLUGINS="my_lmms_eval"
 
-base_model=${BASE_MODEL:-'Qwen/Qwen2.5-VL-3B-Instruct'}
+base_model=${BASE_MODEL:-'Qwen/Qwen2.5-VL-7B-Instruct'}
 base_model_suffix=$(basename $base_model)
 base_output_path=${BASE_OUTPUT_PATH:-"result/${base_model_suffix}/lmms_eval"}
 port=${PORT:-29500}

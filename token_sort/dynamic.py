@@ -17,7 +17,11 @@ class TokenScorer(nn.Module):
         token_dim,
     ):
         super().__init__()
-        self.projector = nn.Linear(query_dim, token_dim)
+        self.projector = nn.Sequential(
+            nn.Linear(query_dim, token_dim),
+            nn.LayerNorm(token_dim),
+            nn.Dropout(0.1)
+        )
         self.in_conv = nn.Sequential(
             nn.LayerNorm(token_dim),
             nn.Linear(token_dim, token_dim),
@@ -60,53 +64,10 @@ class DynamicTokenSorter(BaseTokenSorter):
         return default
 
     def _setup_module(self) -> None:
-        """初始化模块组件"""
-        # rate loss 参数
-        # self.threshold = log(u) - log(1-u)
-        self.token_threshold = self.context.get('token_threshold', 0.5)
-        self.score_threshold = self.context.get('score_threshold', 0)
-        
-        self.tau = self.context.get('tau', 1.0)
-        # 特征维度
         self.token_dim = self.context.get('out_hidden_size', 2048)
         self.query_dim = self.context.get('out_hidden_size', 2048)
         self.scorer_hidden_dim = self.context.get('scorer_hidden_dim', 256)
-        # Token 评分器（Query-conditional）
-        # 输入: [token_features, query_embeddings, mean_token]
         self.token_scorer = TokenScorer(query_dim=self.query_dim, token_dim=self.token_dim)
-
-
-    def _compute_token_mask(
-        self,
-        hidden_states: torch.Tensor,
-        lengths: torch.Tensor,
-        query_embeddings: torch.Tensor,
-    ) -> torch.Tensor:
-        """计算 token 是否该保留
-        Args:
-            hidden_states: (B, Max_len, D) token embeddings
-            length: (B,) length of hidden_states
-            query_embeddings: (B, D_q) 查询嵌入
-        
-        Returns:
-            keep_mask: (B, N, 1) 每个 token 保留的概率
-        """
-        device = hidden_states.device
-        first_param = next(self.token_scorer.parameters())
-        if first_param.device != device:
-            self.token_scorer.to(device)
-        
-        B, N, D = hidden_states.shape
-        idx = torch.arange(N, device=device).unsqueeze(0)   # (1, N)
-        valid_mask = idx < lengths.unsqueeze(-1)            # (1, N) < (B, 1) ==> (B, N)
-        valid_mask = valid_mask.unsqueeze(-1)               # (B, N, -1)
-        query_expanded = query_embeddings.unsqueeze(1).expand(B, N, D)
-        binary_scores = self.token_scorer(hidden_states, query_expanded)
-        # binary_scores = binary_scores
-        hard_mask = F.gumbel_softmax(binary_scores, hard=True)[:, :, 0:1] # (B, N, 1)
-        hard_mask = hard_mask * valid_mask
-        keep_ratio = hard_mask.sum(dim=1) / lengths.clamp(min=1) # ratio 
-        return hard_mask, keep_ratio
 
     def forward(
         self,
@@ -114,6 +75,8 @@ class DynamicTokenSorter(BaseTokenSorter):
         lengths: torch.Tensor,
         query_embeddings: Optional[torch.Tensor] = None,
         training: Optional[bool] = False,
+        *args,
+        **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Dict[str, Any]]:
         """执行Token剪枝
         
@@ -137,18 +100,44 @@ class DynamicTokenSorter(BaseTokenSorter):
         else:
             if query_embeddings.dtype != hidden_states.dtype:
                 query_embeddings = query_embeddings.to(dtype=hidden_states.dtype)
-        hard_mask, keep_ratio = self._compute_token_mask(hidden_states, lengths, query_embeddings)
 
         aux_outputs = {}
         if training:
+            device = hidden_states.device
+            first_param = next(self.token_scorer.parameters())
+            if first_param.device != device:
+                self.token_scorer.to(device)
+            
+            B, N, D = hidden_states.shape
+            idx = torch.arange(N, device=device).unsqueeze(0)   # (1, N)
+            valid_mask = idx < lengths.unsqueeze(-1)            # (1, N) < (B, 1) ==> (B, N)
+            valid_mask = valid_mask.unsqueeze(-1)               # (B, N, -1)
+            query_expanded = query_embeddings.unsqueeze(1).expand(B, N, D)
+            binary_scores = self.token_scorer(hidden_states, query_expanded) # (B, N, 2)
+            hard_mask = F.gumbel_softmax(binary_scores, hard=True)[:, :, 0:1] # (B, N, 1)
+            hard_mask = hard_mask * valid_mask
+            keep_ratio = hard_mask.sum(dim=1) / lengths.clamp(min=1) # ratio 
+  
             aux_outputs = {
                 'soft_prune_mask': hard_mask,
                 'keep_ratio': keep_ratio,
             }
             return None, aux_outputs
         else:
-            # 提取被保留的 Tokens
-            hard_mask = hard_mask.squeeze(-1).detach().bool()
+            device = hidden_states.device
+            first_param = next(self.token_scorer.parameters())
+            if first_param.device != device:
+                self.token_scorer.to(device)
+            B, N, D = hidden_states.shape
+            idx = torch.arange(N, device=device).unsqueeze(0)   # (1, N)
+            valid_mask = idx < lengths.unsqueeze(-1)            # (1, N) < (B, 1) ==> (B, N)
+            valid_mask = valid_mask                             # (B, N)
+            query_expanded = query_embeddings.unsqueeze(1).expand(B, N, D)
+            binary_scores = self.token_scorer(hidden_states, query_expanded) # (B, N, 2)
+            keep_prob = F.softmax(binary_scores, dim=-1)[:, :, 0] # (B, N)
+            hard_mask = binary_scores.argmax(dim=-1) == 0
+            hard_mask = hard_mask * valid_mask # (B, N) & (B, N) ==> (B, N)
+            keep_ratio = hard_mask.sum(dim=1) / lengths.clamp(min=1) # ratio 
             filtered_hidden_list = [
                 hidden_states[i][hard_mask[i]]
                 for i in range(B)
@@ -157,10 +146,12 @@ class DynamicTokenSorter(BaseTokenSorter):
             aux_outputs.update({
                 "filtered_lengths": filtered_lengths,
                 "hard_prune_mask": hard_mask,
-                'keep_ratio': keep_ratio,
-            })
+                "keep_ratio": keep_ratio,
+                "keep_prob": keep_prob,
+            }) 
+            #print(f"DynamicTokenSorter: keep_ratio={keep_ratio.mean().item():.4f}")
             # 把 batch 压扁（flat）成 1 维变长序列
             filtered_hidden = torch.cat(filtered_hidden_list, dim=0) 
             return filtered_hidden, aux_outputs
         
-__all__ = ['DynamicTokenSorter']
+__all__ = ['DynamicTokenSorter'] 

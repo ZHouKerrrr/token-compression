@@ -202,23 +202,23 @@ def create_default_pato_qwen_config(**kwargs) -> PATOQwen2_5_VLConfig:
     """
     return PATOQwen2_5_VLConfig(**kwargs)
 
-# Helper function
 def create_default_pato_config(**kwargs) -> PATOConfig:
-    """Create a default PATO configuration
-    
-    Args:
-        **kwargs: Override parameters
-        
-    Returns:
-        PATOConfig instance
+    """Create a default PATO configuration.
     """
     config = PATOConfig()
-    # Special parameters
-    # Apply overrides
+
     for key, value in kwargs.items():
-        if hasattr(config, key):
+        if not hasattr(config, key):
+            continue
+
+        current_attr = getattr(config, key)
+        if isinstance(value, dict) and current_attr is not None:
+            for sub_key, sub_value in value.items():
+                if hasattr(current_attr, sub_key):
+                    setattr(current_attr, sub_key, sub_value)
+        else:
             setattr(config, key, value)
-    
+
     return config
 
 if __name__ == "__main__":

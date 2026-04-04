@@ -26,9 +26,11 @@ except ImportError:
     multi_dist_module = None
 
 # Import the specific classes to make them available
-from .softsort import DifferentiableSortingTokenSorter
-from .hardsort import HardTokenSorter
-from .dynamic import DynamicTokenSorter
+from .softsort import *
+from .hardsort import *
+from .dynamic import *
+from .dynamic_v2 import *
+from .prunemerge import *
 try:
     from .gatingsort import RandomGatingTokenSorter
 except ImportError:
@@ -52,6 +54,7 @@ __all__ = [
     "DifferentiableSortingTokenSorter",
     "HardTokenSorter",
     "DynamicTokenSorter",
+    "DynamicTokenSorterV2",
 ]
 
 if RandomGatingTokenSorter is not None:
