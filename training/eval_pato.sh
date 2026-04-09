@@ -16,7 +16,7 @@ port=${PORT:-29500}
 attn_implementation=${ATTN_IMPL:-"flash_attention_2"}
 
 config="train_configs/qwen2_5_7b_pato/qwen2_5_7b_pato.yaml"
-
+pato_state_dict_path="output/qwen2_5_7b_pato/pato_components.pt"
 
 eval_list=( \
 "vqav2_val_lite" \
@@ -43,7 +43,7 @@ do
     echo "Evaluating task: $task"
     accelerate launch --num_processes=$ngpus --main_process_port=$port -m lmms_eval \
         --model pato_qwen2_5_vl \
-        --model_args=pretrained=${base_model},attn_implementation=${attn_implementation} \
+        --model_args=pretrained=${base_model},attn_implementation=${attn_implementation},pato_state_dict_path=${pato_state_dict_path} \
         --tasks $task \
         --batch_size 1 \
         --output_path $output_path \

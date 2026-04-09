@@ -12,15 +12,20 @@ from .pato_config import (
     create_default_pato_config,
 )
 from .pato_model import (
-    PATOQwen2_5_VLForConditionalGeneration,
+    PATOQwen2_5_VLForConditionalGeneration_ROUTE,
 )
-
+from .pato import (
+    PATOQwen2_5_VLForConditionalGeneration
+)
+from .loss import create_pato_loss
 __all__ = [
     'PATOConfig',
     'PATOQwen2_5_VLConfig',
     'GRawConfig',
     'TokenSortConfig',
     'ProjectorConfig',
+    'PATOQwen2_5_VLForConditionalGeneration_ROUTE',
+    'PATOQwen2_5_VLForConditionalGeneration'
     'create_default_pato_config',
-    'PATOQwen2_5_VLForConditionalGeneration',
+    'create_pato_loss',
 ]

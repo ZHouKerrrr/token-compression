@@ -21,25 +21,12 @@ class GRawConfig:
     # General settings
     enable: bool = True
     mode: str = 'A'  # Method A: Weighted Downsampling
-    
-    # Input/Output sizes
-    target_size: Tuple[int, int] = (448, 448)
-    
+
     # Feature dimensions
     text_hidden_size: int = 2048  # Qwen2.5-VL language model hidden size
     vision_hidden_size: int = 1280  # LightCNN feature dimension
     
-    # Network architecture
-    density_hidden_dim: int = 256
-    density_layers: int = 2
-    
-    # Regularization
-    lambda_tv: float = 1e-4  # Total Variation
-    lambda_area: float = 1e-3  # Area constraint
-    min_area_ratio: float = 0.1  # Minimum density area ratio
-    
-    # Training
-    learnable: bool = True
+
 
 
 @dataclass
@@ -49,23 +36,30 @@ class TokenSortConfig:
     # General settings
     enable: bool = True
     mode: str = 'dynamic_token_sorter'  
+    
+    # Qwen2.5-VL language model hidden size
+    text_hidden_size: int = 2048  
+    
+    # LightAttention args
+    attn_layers: int = 2
+    
     # Method hard_token_sorter: Hard token pruned by scores
-    token_threshold: float = 0.5
-    score_threshold: float = 0
+    # token_threshold: float = 0.5
+    # score_threshold: float = 0
 
-    tau_init: float = 1.0 # tau of softmax in rate_loss
-    tau_min: float = 0.05
-    tau_decay: str = 'linear'  # 'linear' or 'exponential'
+    # tau_init: float = 1.0 # tau of softmax in rate_loss
+    # tau_min: float = 0.05
+    # tau_decay: str = 'linear'  # 'linear' or 'exponential'
 
-    # Ranker network
-    scorer_hidden_dim: int = 256
+    # # Ranker network
+    # scorer_hidden_dim: int = 256
     
-    # Regularization
-    lambda_entropy: float = 1e-3
-    lambda_diversity: float = 1e-4
+    # # Regularization
+    # lambda_entropy: float = 1e-3
+    # lambda_diversity: float = 1e-4
     
-    # Sinkhorn iterations (for soft permutation)
-    sinkhorn_iters: int = 5
+    # # Sinkhorn iterations (for soft permutation)
+    # sinkhorn_iters: int = 5
 
 
 @dataclass
@@ -83,7 +77,21 @@ class ProjectorConfig:
     # Dropout
     dropout: float = 0.1
 
-
+@dataclass
+class PATOLossConfig:
+    """Configuration for PATO loss components"""
+    # loss function weights
+    lambda_kd_logits:float = 0.5
+    lambda_kd_feature: float = 0.5
+    lambda_distortion: float = 0.01   # 0.1
+    lambda_compact: float = 0.01
+    lambda_tv: float = 0.01
+    lambda_rate: float = 0.4          # (1e-3)
+    
+    # temperature for distillation losses
+    temperature_kd_logits:float = 2.0
+    temperature_kd_feature: float = 2.0
+    
 @dataclass
 class PATOConfig:
     """Complete PATO configuration"""
@@ -94,11 +102,8 @@ class PATOConfig:
     projector: ProjectorConfig = field(default_factory=ProjectorConfig)
     
     # Loss weights
-    lambda_distill: float = 0.05  # Feature distillation
-    lambda_contrast: float = 0.1  # Contrastive loss (query pairs)
-    lambda_sort_reg: float = 0.01  # Token sort regularization
-    lambda_rate: float = 0.3 # ratio of Rate Loss of token sort
-    lambda_distortion: float = 2.0 # Distortion of main mission
+    loss_config: PATOLossConfig = field(default_factory=PATOLossConfig)
+
     
     # Training strategy
     freeze_vision_encoder: bool = True
@@ -130,6 +135,7 @@ class PATOQwen2_5_VLConfig(Qwen2_5_VLConfig):
         else:
             self.pato_config = pato_config
         super().__init__(**kwargs)
+        
     @staticmethod
     def _dict_to_pato_config(config_dict: dict) -> PATOConfig:
         """Convert dictionary to PATOConfig dataclass"""
@@ -156,6 +162,7 @@ class PATOQwen2_5_VLConfig(Qwen2_5_VLConfig):
             projector=projector_config,
             **main_params
         )
+        
     def _base_config(self):
         """Get base Qwen2.5-VL config without PATO params"""
         base_dict = self.to_dict()
@@ -163,6 +170,7 @@ class PATOQwen2_5_VLConfig(Qwen2_5_VLConfig):
         base_dict.pop('pato_config', None)
         base_config = Qwen2_5_VLConfig(**base_dict)
         return base_config
+    
     def to_dict(self):
         """Override to include PATO config"""
         output = super().to_dict()
@@ -178,9 +186,6 @@ class PATOQwen2_5_VLConfig(Qwen2_5_VLConfig):
             'projector': {
                 k: v for k, v in self.pato_config.projector.__dict__.items()
             },
-            'lambda_distill': self.pato_config.lambda_distill,
-            'lambda_contrast': self.pato_config.lambda_contrast,
-            'lambda_sort_reg': self.pato_config.lambda_sort_reg,
             'freeze_vision_encoder': self.pato_config.freeze_vision_encoder,
             'freeze_llm': self.pato_config.freeze_llm,
             'freeze_embeddings': self.pato_config.freeze_embeddings,

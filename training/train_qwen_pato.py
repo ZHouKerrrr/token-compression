@@ -43,14 +43,18 @@ from pato_integration import (
     PATOQwen2_5_VLForConditionalGeneration,
     PATOQwen2_5_VLConfig,
 )
-from pato_integration.pato_config import PATOConfig, create_default_pato_config
+from pato_integration.pato_config import (
+    PATOConfig, 
+    PATOLossConfig,
+    create_default_pato_config,
+)
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     Qwen2_5_VLForConditionalGeneration, 
     Qwen2_5_VLConfig,
 )
 from g_raw import WeightedDownsample
 from token_sort import DifferentiableSortingTokenSorter
-from pato_integration.loss import PATOLoss
+from pato_integration.loss import create_pato_loss
 from training.data_loader import create_vqa_dataloader
 
 from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config
@@ -107,31 +111,19 @@ class PATOScriptArgurment:
         default=224,
         metadata={"help": "The min legal size of an image.It should be equal to g_raw.target_size."},
     )
+    pato_state_dict_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Resume from checkpoint's path"},
+    )
 @dataclass
 class PATOTrainingArgument(TrainingArguments):
     """
         除了自定义的训练参数外，还继承了 transformers.TrainingArguments 的所有参数
         包括了：batch_size等基本训练参数
     """
-    lambda_kd: float = field(
-        default=1.0,
-        metadata={"help": "Weight for knowledge distillation loss."},
-    )
-    lambda_distortion: float = field(
-        default=1.0,
-        metadata={"help": "Weight for distortion loss."},
-    )
-    lambda_rate: float = field(
-        default=1e-3,
-        metadata={"help": "Weight for rate loss."},
-    )
-    target_rate: float = field(
-        default=0.25,
-        metadata={"help": "Weight for rate loss."},
-    )
-    kd_temperature: float = field(
-        default=2.0,
-        metadata={"help": "Temperature for knowledge distillation loss."},
+    lambda_loss : Optional[dict] = field(
+        default=None,
+        metadata={"help": "Loss weights for different loss components."}
     )
 @dataclass
 class PATOModelConfig:
@@ -139,12 +131,8 @@ class PATOModelConfig:
         default=None,
         metadata={"help": "Model checkpoint for weights initialization."},
     )
-    teacher_model_name_or_path: Optional[str] = field(
+    teacher_config: Optional[dict] = field(
         default=None,
-        metadata={"help": "Model checkpoint for weights initialization."},
-    )
-    distill: Optional[bool] = field(
-        default=False,
         metadata={"help": "Model checkpoint for weights initialization."},
     )
     torch_dtype: Optional[str] = field(
@@ -154,21 +142,9 @@ class PATOModelConfig:
             "choices": ["auto", "bfloat16", "float16", "float32"],
         },
     )
-    projector_enable : bool = field(
-        default=False,
-        metadata={"help": "Whether to enable the visual projector."}
-    )
-    g_raw_enable : bool = field(
-        default=False,
-        metadata={"help": "Whether to enable the graph raw process."}
-    )
-    token_sort_enable : bool = field(
-        default=True,
-        metadata={"help": "Whether to enable the visual token sort."}
-    )
-    token_sort_mode: str = field(
-        default="dynamic_token_sorter",
-        metadata={"help": "The method of token sorting. Options: 'dynamic_token_sorter','dynamic_token_sorter_v2', 'hard_token_sorter'."}
+    pato_args : Optional[dict] = field(
+        default=None,
+        metadata={"help": "arguments of pato model."}
     )
 
 class TauAnnealingCallback(TrainerCallback):
@@ -197,7 +173,7 @@ class PATOTrainer(Trainer):
     """
     def __init__(
             self, 
-            teacher_model: nn.Module = None,
+            teacher_model,
             *args,
             **kwargs
         ):
@@ -207,11 +183,11 @@ class PATOTrainer(Trainer):
             self.teacher.eval()
             for param in self.teacher.parameters():
                 param.requires_grad = False
-        self.lambda_kd = self.args.lambda_kd
-        self.lambda_distortion = self.args.lambda_distortion
-        self.lambda_rate = self.args.lambda_rate
-        self.target_rate = self.args.target_rate
-        self.kd_temperature = self.args.kd_temperature if hasattr(self.args, "kd_temperature") else 2.0
+        self.args = kwargs["args"]
+        self.lambda_loss = kwargs["args"].lambda_loss
+        self.pato_loss_fct = create_pato_loss()
+        self.print_loss = 0
+        
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """
@@ -228,7 +204,10 @@ class PATOTrainer(Trainer):
             if num_items_in_batch is not None:
                 loss_kwargs["num_items_in_batch"] = num_items_in_batch
             inputs = {**inputs, **loss_kwargs}
+        
+        # --------- student route forward --------- #
         query = inputs.pop("query", None)
+
         if query is not None:
             query_id = self.processing_class(
                 query,
@@ -243,16 +222,20 @@ class PATOTrainer(Trainer):
                 "query_attention_mask": query_id.attention_mask,
             })
         else:
-            raise NotImplementedError("Currently only supports models with 'query' input. Please modify the code to fit your model's input format.")
+            raise NotImplementedError("Currently only supports models with 'query' \
+                                      input. Please modify the code to fit your model's input format.")
+        if self.teacher is not None:
+            output_hidden_states = True
+        else:
+            output_hidden_states = False
+
         outputs = model(
             **inputs,
             use_cache=False,
             return_dict=True,
+            output_hidden_states=output_hidden_states,
         )
-        aux_outputs = outputs.aux_outputs
-        
-        # Save past state if it exists
-        # TODO: this needs to be fixed and made cleaner later.
+
         if self.args.past_index >= 0:
             self._past = outputs[self.args.past_index]
 
@@ -279,73 +262,55 @@ class PATOTrainer(Trainer):
             # -------------------------------------- #
             #           LOSS 设计核心代码             #
             # -------------------------------------- #
-            if self.teacher is not None:
-                labels = inputs["labels"]
 
-                # teacher 不需要 labels，省掉一份无用 CE
+            if self.teacher is not None:
+                aux_outputs = outputs.aux_outputs
+                labels = inputs["labels"]
                 teacher_inputs = {k: v for k, v in inputs.items() if k != "labels"}
+
                 with torch.no_grad():
-                    teacher_logits = self.teacher(
+                    teacher_outputs = self.teacher(
                         **teacher_inputs,
                         use_cache=False,
                         return_dict=True,
-                    ).logits
-                # 1. distortion loss
-                distortion_loss = outputs["loss"]
-                
-                # 2. knowledge distillation loss (logits kd loss and hidden_states kd loss)
-                T = self.kd_temperature  # 先试 2.0 或 4.0
-                student_logits = outputs.logits.float()
-                teacher_logits = teacher_logits.float()
-                # 和 CE 完全对齐
-                shift_student = student_logits[:, :-1, :].contiguous()
-                shift_teacher = teacher_logits[:, :-1, :].contiguous()
-                shift_labels = labels[:, 1:].contiguous()
+                        output_hidden_states=output_hidden_states,
+                    )
 
-                valid = shift_labels.ne(-100)   # [B, T-1]
-
-                shift_student = shift_student[valid]   # [N_valid, V]
-                shift_teacher = shift_teacher[valid]   # [N_valid, V]
-
-                student_log_probs = F.log_softmax(shift_student / T, dim=-1)
-                teacher_log_probs = F.log_softmax(shift_teacher / T, dim=-1)
-                kd_loss = F.kl_div(
-                    student_log_probs,
-                    teacher_log_probs,
-                    reduction="batchmean",
-                    log_target=True,
-                ) * (T * T)
-                
-                # 弃用：温度缩放后 loss 过小，难以调节 lambda_kd 权重
-                # if self.state.max_steps > 0:
-                #     progress = self.state.global_step / self.state.max_steps
-                # else:
-                #     progress = 0.0
-                # self.target_rate_pre = self.target_rate + 0.5 * (1.0 - self.target_rate) * (
-                #     1.0 + math.cos(math.pi * progress)
-                # ) # 1 -> 0.25
-                
-                # 3. rate loss
-                keep_ratio = aux_outputs["keep_ratio"]
-                rate_loss = keep_ratio.mean(dim=0)
-                
-                loss = self.lambda_distortion * distortion_loss + self.lambda_kd * kd_loss + self.lambda_rate * rate_loss 
+                losses = self.pato_loss_fct(
+                    inputs=inputs,
+                    labels=labels,
+                    lambda_loss=self.lambda_loss,
+                    students_outputs=outputs,
+                    teacher_outputs=teacher_outputs,
+                )
+                # grad_info = check_loss_gradients(
+                #     losses=losses,
+                #     model=self.model,   # 你的 student model
+                #     optimizer=self.optimizer,
+                #     param_filter=None,  # 检查全部参数
+                #     retain_graph=True,
+                #     topk=20,
+                # )
+                loss = sum(losses.values())
                 if self.state.global_step % 50 == 0:
-                    print_rank0(f"keep ratio: {keep_ratio}")
-                    print_rank0(f"Distortion Loss: {self.lambda_distortion * distortion_loss}, KD Loss: {self.lambda_kd * kd_loss}, Rate Loss: {self.lambda_rate * rate_loss[0]},  Loss: {loss[0]}")
+                    if self.print_loss % 4 == 0: 
+                        print_rank0(f"keep ratio: {aux_outputs['keep_ratio']}")
+                        for key in losses.keys():
+                            print_rank0(f"{key}: {losses[key]}")
+                    self.print_loss += 1
+                    
             else:
                 keep_ratio = aux_outputs["keep_ratio"]
                 rate_loss = keep_ratio.mean(dim=0)
                 distortion_loss = outputs["loss"]
-                loss = self.lambda_distortion * distortion_loss + self.lambda_rate * rate_loss
-            unwrapped_model = self.accelerator.unwrap_model(model)
+                loss = self.lambda_loss["lambda_distortion"] * distortion_loss + self.lambda_loss["lambda_rate"] * rate_loss
         if (
             self.args.average_tokens_across_devices
             and (self.model_accepts_loss_kwargs or self.compute_loss_func)
             and num_items_in_batch is not None
         ):
             loss *= self.accelerator.num_processes
-
+        
         return (loss, outputs) if return_outputs else loss
     
 
@@ -381,46 +346,46 @@ def main():
 
     model_path = model_args.model_name_or_path
     base_model_config = Qwen2_5_VLConfig.from_pretrained(model_path)
-    pato_config = init_pato_config(base_model_config, model_args)
+    pato_config: PATOConfig = create_default_pato_config(**model_args.pato_args)
     config = PATOQwen2_5_VLConfig(
         pato_config,
         **base_model_config.to_dict()
     )
+
     # print(config)
     model = PATOQwen2_5_VLForConditionalGeneration.from_pretrained(
         model_path,
         config=config,
         device_map="cuda",
-        attn_implementation={
-            "vision_config": "flash_attention_2",
-            "text_config": "pato",
-        },
+        attn_implementation="eager",
         torch_dtype=model_args.torch_dtype
     )
+
     print_rank0("\n" + "="*60)
     print_rank0("Initializing Teacher Model")
     print_rank0("="*60)
-    teacher_model_config = model_args.teacher_model
-    if teacher_model_config.enable:
+    teacher_config = model_args.teacher_config
+    if teacher_config["enable"]:
         print_rank0("Distillation enabled. Loading teacher model...")
-        teacher_model_path = teacher_model_config.teacher_model_name_or_path
+        teacher_model_path = teacher_config["teacher_model_name_or_path"]
         teacher_model_config = Qwen2_5_VLConfig.from_pretrained(teacher_model_path)
         teacher_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             teacher_model_path,
             config=teacher_model_config,
             device_map="cuda",
-            attn_implementation='flash_attention_2',
+            attn_implementation='eager',
             torch_dtype=model_args.torch_dtype
         )
     else:
         teacher_model = None
-    
-    # pato_state_dict_path = "output/qwen2_5_3b_pato/pato_components.pt"
+
     if script_args.resume:
-        raise NotImplementedError("Resume from checkpoint is not implemented yet.")
+        model.load_pato_components(pato_state_dict_path=script_args.pato_state_dict_path)
     else: 
         model.load_pato_components()
+
     # dump_param_freeze_status(model, training_args.output_dir)
+
 
     # ------------ loading training dataset ------------ #
     processor = AutoProcessor.from_pretrained(
@@ -439,7 +404,6 @@ def main():
         processor=processor,
         is_sft=True,
     )
-
 
     trainer = PATOTrainer(
         model=model,

@@ -11,6 +11,16 @@ TODO:
 """
 import sys
 import os
+from logging import (
+    CRITICAL,  # NOQA
+    DEBUG,  # NOQA
+    ERROR,  # NOQA
+    FATAL,  # NOQA
+    INFO,  # NOQA
+    NOTSET,  # NOQA
+    WARN,  # NOQA
+    WARNING,  # NOQA
+)
 from typing import Optional, Tuple, List, Union, Dict, Any
 from pathlib import Path
 import math
@@ -38,11 +48,9 @@ from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     Qwen2_5_VLCausalLMOutputWithPast,
     Qwen2_5_VLForConditionalGeneration,
     Qwen2_5_VLAttention,
-    Qwen2_5_VLVisionFlashAttention2,
     ModelOutput,
     BaseModelOutputWithPast,
     QWEN2_5_VL_ATTENTION_CLASSES,
-    QWEN2_5_VL_VISION_ATTENTION_CLASSES,
 )
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     apply_multimodal_rotary_pos_emb,
@@ -64,10 +72,13 @@ from .utils import *
 from g_raw import get_graw_class
 from token_sort import get_token_sort_class
 
-def print_rank0(*args, **kwargs):
-    local_rank = int(os.getenv('LOCAL_RANK', '0'))
-    if local_rank == 0:
-        print(*args, **kwargs)
+logger = logging.get_logger(__name__)
+
+"""
+    Instruct the network to route through PATO components or original Qwen2.5-VL components.
+"""
+GLOBAL_ROUTE="pato"
+
 
 @dataclass
 class PATOQwen2_5_VLCausalLMOutputWithPast(ModelOutput):
@@ -101,8 +112,6 @@ class PATOQwen2_5_VLCausalLMOutputWithPast(ModelOutput):
     """
 
     loss: Optional[torch.FloatTensor] = None
-    keep_ratio: Optional[torch.FloatTensor] = None
-    distortion_loss: Optional[torch.FloatTensor] = None
     logits: Optional[torch.FloatTensor] = None
     past_key_values: Optional[List[torch.FloatTensor]] = None
     hidden_states: Optional[Tuple[torch.FloatTensor]] = None
@@ -154,7 +163,6 @@ class PATOSimplifiedProjector(nn.Module):
         """
         return self.projection(vision_tokens)
 
-
 class PATOQwen2_5_VisionTransformer(Qwen2_5_VisionTransformerPretrainedModel):
     """Extended Vision Transformer with Token Sort
     
@@ -166,7 +174,6 @@ class PATOQwen2_5_VisionTransformer(Qwen2_5_VisionTransformerPretrainedModel):
                  config : PATOQwen2_5_VLConfig = None,
                  ):
         super().__init__(config.vision_config)
-        
         self.pato_config = config.pato_config
         self.config = config.vision_config
         # Create Token Sort module if enabled
@@ -179,7 +186,8 @@ class PATOQwen2_5_VisionTransformer(Qwen2_5_VisionTransformerPretrainedModel):
             }
             self.token_sorter = token_sort_class(
                 self.pato_config.token_sort, 
-                context)
+                context
+            )
         else:
             self.token_sorter = None
 
@@ -195,13 +203,14 @@ class PATOQwen2_5_VisionTransformer(Qwen2_5_VisionTransformerPretrainedModel):
         else:
             # Keep original merger for now (safely handle if merger doesn't exist)
             self.projector = getattr(self, 'merger', None)
+
+        self.gradient_checkpointing = False
     
-    def forward(
+    def pato_forward(
         self,
         hidden_states: torch.Tensor,
         grid_thw: torch.Tensor,
         query_embeddings: Optional[torch.Tensor] = None,
-        **kwargs
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict]]:
         """Forward pass with Token Sort
         
@@ -323,34 +332,31 @@ class PATOQwen2_5_VisionTransformer(Qwen2_5_VisionTransformerPretrainedModel):
             return sorted_tokens, aux_outputs
         else:
             return hidden_states, aux_outputs
-
-class PATOQwen2_5_VLRotaryEmbedding(Qwen2_5_VLRotaryEmbedding):
-    def __init__(self, config: Qwen2_5_VLConfig, device=None):
-        super().__init__(config, device)
-
-    @torch.no_grad()
-    @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
-    def forward(self, x, position_ids):
-        # In contrast to other models, Qwen2_5_VL has different position ids for the grids
-        # So we expand the inv_freq to shape (3, ...)
-        inv_freq_expanded = self.inv_freq[None, None, :, None].float().expand(3, position_ids.shape[1], -1, 1)
-        position_ids_expanded = position_ids[:, :, None, :].float()  # shape (3, bs, 1, positions)
-
-        device_type = x.device.type if isinstance(x.device.type, str) and x.device.type != "mps" else "cpu"
-        with torch.autocast(device_type=device_type, enabled=False):  # Force float32
-            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(2, 3)
-            emb = torch.cat((freqs, freqs), dim=-1)
-            cos = emb.cos() * self.attention_scaling
-            sin = emb.sin() * self.attention_scaling
-
-        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
+    
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        grid_thw: torch.Tensor,
+        query_embeddings: Optional[torch.Tensor] = None,
+    ):
+        if GLOBAL_ROUTE == "pato":
+            return self.pato_forward(
+                hidden_states,
+                grid_thw=grid_thw,
+                query_embeddings=query_embeddings,
+            )
+        elif GLOBAL_ROUTE == "base":
+            return Qwen2_5_VisionTransformerPretrainedModel.forward(
+                self, 
+                hidden_states, 
+                grid_thw=grid_thw,
+            )
 
 class PATOAttention(Qwen2_5_VLAttention):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-    
-    def softmax_with_mask(self, attn, prune_mask, eps=1e-6):
 
+    def softmax_with_mask(self, attn, prune_mask, eps=1e-6):
         B, N = prune_mask.size()
         B, H, N, N = attn.size()
         attn_prune_mask = prune_mask.reshape(B, 1, 1, N)  # * prune_mask.reshape(B, 1, N, 1)
@@ -364,7 +370,7 @@ class PATOAttention(Qwen2_5_VLAttention):
         attn = attn.to(torch.float32).exp_() * attn_prune_mask.to(torch.float32)
         attn = (attn + eps/N) / (attn.sum(dim=-1, keepdim=True) + eps)
         return attn.type_as(max_att)
-
+    
     def forward(
         self, 
         hidden_states, 
@@ -434,16 +440,23 @@ class PATOAttention(Qwen2_5_VLAttention):
             attn_weights = None
 
         return attn_output, attn_weights, past_key_value
-
+    
 class PATOQwen2_5_VLDecoderLayer(nn.Module):
     def __init__(self, config: Qwen2_5_VLConfig, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
-        self.self_attn = PATOAttention(config, layer_idx)
+        if config.use_sliding_window and config._attn_implementation != "flash_attention_2":
+            logger.warning_once(
+                f"Sliding Window Attention is enabled but not implemented for `{config._attn_implementation}`; "
+                "unexpected results may be encountered."
+            )
+        self.self_attn = QWEN2_5_VL_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
+        self.pato_attn = PATOAttention
         self.mlp = Qwen2MLP(config)
         self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-    def forward(
+
+    def pato_forward(
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
@@ -454,7 +467,6 @@ class PATOQwen2_5_VLDecoderLayer(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
         prune_mask = None,
-        **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
         Args:
@@ -477,13 +489,13 @@ class PATOQwen2_5_VLDecoderLayer(nn.Module):
                 Arbitrary kwargs to be ignored, used for FSDP and other methods that injects code
                 into the model
         """
-
         residual = hidden_states
 
         hidden_states = self.input_layernorm(hidden_states)
 
         # Self Attention
-        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+        hidden_states, self_attn_weights, present_key_value = self.pato_attn.forward(
+            self.self_attn,
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -512,6 +524,58 @@ class PATOQwen2_5_VLDecoderLayer(nn.Module):
 
         return outputs
 
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        prune_mask = None,
+    ):
+        if self.training:
+            if GLOBAL_ROUTE == "pato":
+                return self.pato_forward(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_value=past_key_value,
+                    output_attentions=output_attentions,
+                    use_cache=use_cache,
+                    cache_position=cache_position,
+                    position_embeddings=position_embeddings,
+                    prune_mask=prune_mask,
+                )
+            elif GLOBAL_ROUTE == "base":
+                # kwargs.pop("prune_mask")
+                return Qwen2_5_VLDecoderLayer.forward(
+                    self,
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_value=past_key_value,
+                    output_attentions=output_attentions,
+                    use_cache=use_cache,
+                    cache_position=cache_position,
+                    position_embeddings=position_embeddings,
+                )
+        else:
+            # kwargs.pop("prune_mask")
+            return Qwen2_5_VLDecoderLayer.forward(
+                self, 
+                hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_value=past_key_value,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+            )
+    
 class PATOQwen2_5_VLModel(Qwen2_5_VLPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
@@ -523,13 +587,12 @@ class PATOQwen2_5_VLModel(Qwen2_5_VLPreTrainedModel):
         )
         self._attn_implementation = config._attn_implementation
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.rotary_emb = PATOQwen2_5_VLRotaryEmbedding(config=config)
-
+        self.rotary_emb = Qwen2_5_VLRotaryEmbedding(config=config)
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
         self.post_init()
 
-    def forward(
+    def pato_forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
@@ -556,7 +619,6 @@ class PATOQwen2_5_VLModel(Qwen2_5_VLPreTrainedModel):
 
         if self.gradient_checkpointing and self.training:
             if use_cache:
-
                 use_cache = False
 
         # torch.jit.trace() doesn't support cache objects in the output
@@ -647,6 +709,49 @@ class PATOQwen2_5_VLModel(Qwen2_5_VLPreTrainedModel):
             attentions=all_self_attns,
         )
     
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        aux_outputs: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+    ):
+        if GLOBAL_ROUTE == "pato":
+            return self.pato_forward(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                aux_outputs=aux_outputs,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=inputs_embeds,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+                cache_position=cache_position,
+            )
+        elif GLOBAL_ROUTE == "base":
+            return Qwen2_5_VLModel.forward(
+                self,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=inputs_embeds,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+                cache_position=cache_position,
+            )
+
     def _update_causal_mask(
         self,
         attention_mask: torch.Tensor,
@@ -799,7 +904,7 @@ class PATOQwen2_5_VLModel(Qwen2_5_VLPreTrainedModel):
                 )
         return causal_mask
 
-class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration):
+class PATOQwen2_5_VLForConditionalGeneration_ROUTE(Qwen2_5_VLForConditionalGeneration):
     """PATO-enhanced Qwen2.5-VL Model
     
     This model extends Qwen2.5-VL with:
@@ -817,18 +922,15 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
                 **model_kwargs,):
         # Initialize base model
         
-        Qwen2_5_VLPreTrainedModel.__init__(self, config._base_config(), *model_args,**model_kwargs)
+        Qwen2_5_VLPreTrainedModel.__init__(self, config, *model_args,**model_kwargs)
         self.config = config
         self.pato_config = config.pato_config
-        self.base_model_config = config._base_config()
-        self.vision_config = self.base_model_config.vision_config
-        self.lambda_rate = self.pato_config.lambda_rate # default 0.5
-        self.lambda_distortion = self.pato_config.lambda_distortion # default 0.5
+        self.vision_config = self.config.vision_config
+        
         # Create g_raw module if enabled
         if self.pato_config.g_raw.enable:
             g_raw_class = get_graw_class(self.pato_config.g_raw.mode)
-            context = {
-            }
+            context = {}
             self.g_raw = g_raw_class(self.pato_config.g_raw, context)
         else:
             self.g_raw = None
@@ -836,7 +938,7 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
         # Create extended visual encoder
         self.visual = PATOQwen2_5_VisionTransformer(self.config)
         # Create language model (unchanged)
-        self.model = PATOQwen2_5_VLModel(self.base_model_config)
+        self.model = PATOQwen2_5_VLModel(self.config)
         self.rope_deltas = None
         self.lm_head = nn.Linear(self.config.hidden_size, self.config.vocab_size, bias=False)
         # Apply freezing if configured
@@ -889,13 +991,13 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
         
         # Apply attention-weighted pooling
         if attention_mask is not None:
-            mask_expanded = attention_mask.unsqueeze(-1).float()  # [B, seq_len, 1]
+            mask_expanded = attention_mask.unsqueeze(-1)  # [B, seq_len, 1]
             embeds_masked = embeds * mask_expanded
         else:
             embeds_masked = embeds
         return embeds_masked  # [B, text_len, hidden_dim]
 
-    def forward(
+    def pato_forward(
         self,
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
@@ -911,21 +1013,19 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
         image_grid_thw: Optional[torch.LongTensor] = None,
         video_grid_thw: Optional[torch.LongTensor] = None,
         second_per_grid_ts: Optional[torch.Tensor] = None,
+        query_input_ids = None,
+        query_attention_mask = None,
         **kwargs
     ) -> Union[Tuple, Qwen2_5_VLCausalLMOutputWithPast]:
         """Forward pass with PATO enhancements"""
-
         # Store auxiliary outputs for loss computation
         aux_outputs = {}
-
         # Config extraction
         patch_size = self.vision_config.patch_size                      # 14
         temporal_patch_size = self.vision_config.temporal_patch_size    # 2
         spatial_merge_size = self.vision_config.spatial_merge_size      # 2
         in_chans = self.vision_config.in_chans                          # 3
-        target_size = self.pato_config.g_raw.target_size[0]             # (224 * 224)
-        vision_tokens_num = (target_size * target_size) // (patch_size * patch_size * spatial_merge_size * spatial_merge_size) # graw后的视觉token数量 64
-        vision_seq_len = (target_size * target_size) // (patch_size * patch_size) # 256
+
         vision_token_id = self.config.vision_token_id
         vision_start_token_id = self.config.vision_start_token_id
         vision_end_token_id = self.config.vision_end_token_id
@@ -935,8 +1035,6 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
         # ============================================================
         # Step 1: Extract text embeddings for conditioning
         # ============================================================
-        query_input_ids = kwargs.get("query_input_ids", None)
-        query_attention_mask = kwargs.get("query_attention_mask", None)
         if query_input_ids is not None and query_attention_mask is not None:
             query_embeds = self.get_text_embeddings(query_input_ids, query_attention_mask)
         else:
@@ -986,10 +1084,12 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
                     query_embeddings=query_embeds,
                 )
 
+            
             if vision_aux is not None:
                 hard_prune_mask = vision_aux.get("hard_prune_mask", None)
                 soft_prune_mask = vision_aux.get("soft_prune_mask", None)
                 transform_matrices = vision_aux.get("transform_matrices", None)
+                print(hard_prune_mask, soft_prune_mask, transform_matrices)
             # endpoint for testing
             if self.pato_config.evaluate:
                 return vision_aux
@@ -1093,10 +1193,6 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
             inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
         else:
             image_embeds = None
-
-        # endpoint for testing
-        if self.pato_config.evaluate:
-            return aux_outputs
         
         # Call language model
         outputs = self.model(
@@ -1131,21 +1227,89 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
                 shift_labels = shift_labels.to(shift_logits.device)
                 loss = loss_fct(shift_logits, shift_labels)
                 del shift_logits, shift_labels
-            del hidden_states
             
         if return_dict:
             return PATOQwen2_5_VLCausalLMOutputWithPast(
                 loss=loss,
                 logits=logits,
+                hidden_states=outputs.hidden_states,
                 rope_deltas=self.rope_deltas,
                 aux_outputs=aux_outputs,
             )
         else:
             return outputs, aux_outputs, loss
+    
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        pixel_values: Optional[torch.Tensor] = None,
+        image_grid_thw: Optional[torch.LongTensor] = None,
+        video_grid_thw: Optional[torch.LongTensor] = None,
+        second_per_grid_ts: Optional[torch.Tensor] = None,
+        query_input_ids = None,
+        query_attention_mask = None,
+        **kwargs,
+    ):
+        """Forward pass with route selection."""
+        if GLOBAL_ROUTE == "pato":
+            return self.pato_forward(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=inputs_embeds,
+                labels=labels,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+                video_grid_thw=video_grid_thw,
+                second_per_grid_ts=second_per_grid_ts,
+                query_input_ids = query_input_ids,
+                query_attention_mask = query_attention_mask,
+                **kwargs
+            )
+        elif GLOBAL_ROUTE == "base":
+            return Qwen2_5_VLForConditionalGeneration.forward(
+                self, 
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=inputs_embeds,
+                labels=labels,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+                video_grid_thw=video_grid_thw,
+                second_per_grid_ts=second_per_grid_ts,
+                **kwargs
+            )
+    
+    @staticmethod
+    def set_route(route: str):
+        global GLOBAL_ROUTE
+        assert route in ["pato", "base"], "Route must be either 'pato' or 'base'"
+        GLOBAL_ROUTE = route
 
     """
         init model backbone -> load pato components -> forward
     """
+
     def load_pato_components(
             self, 
             pato_state_dict: Dict[str, Any] = None,
@@ -1159,14 +1323,12 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
                 map_location=device,
                 weights_only=False,
             )
-            print(type(pato_state_dict))
-            print(pato_state_dict.keys())
-            self.config = pato_state_dict["config"]
+            print(f"pato_state_dict info: {type(pato_state_dict)}, {pato_state_dict.keys()}")
             
         if self.pato_config.g_raw.enable:
-            g_raw_class = get_graw_class(self.config.pato_config.g_raw.mode)
+            g_raw_class = get_graw_class(self.pato_config.g_raw.mode)
             context = {}
-            self.g_raw = g_raw_class(self.config.pato_config.g_raw, context).to(device=device, dtype=dtype)
+            self.g_raw = g_raw_class(self.pato_config.g_raw, context).to(device=device, dtype=dtype)
         else:
             self.g_raw = None
 
@@ -1217,5 +1379,5 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
 __all__ = [
     'PATOSimplifiedProjector',
     'PATOQwen2_5_VisionTransformer',
-    'PATOQwen2_5_VLForConditionalGeneration',
+    'PATOQwen2_5_VLForConditionalGeneration_ROUTE',
 ]

@@ -39,30 +39,41 @@ class TokenScorer(nn.Module):
         self,
         query_dim,
         token_dim,
-        layers: int = 2,
+        attn_config,
     ):
         super().__init__()
-        self.query_representation = nn.Parameter(torch.randn(1, 1, token_dim) * 0.02)
-        self.attn = nn.Sequential(
-            AttentionLayer(token_dim) for _ in range(layers)
-        )
-        self.projector = nn.Sequential(
-            nn.Linear(query_dim, token_dim),
-            nn.LayerNorm(token_dim),
-            nn.Dropout(0.1)
-        )
+        self.config = attn_config
+        if attn_config["enable"]:
+            self.query_cls = nn.Parameter(torch.randn(1, 1, token_dim) * 0.02)
+            self.attn_layers = nn.ModuleList(
+                [AttentionLayer(token_dim) for _ in range(attn_config["layers"])]
+            )
+            self.projector = nn.Sequential(
+                nn.Linear(query_dim, token_dim),
+                nn.LayerNorm(token_dim),
+                nn.Dropout(0.1)
+            )
+            self.out_conv = nn.Sequential(
+                nn.Linear(token_dim * 2, token_dim),
+                nn.GELU(),
+                nn.Linear(token_dim, token_dim // 4),
+                nn.GELU(),
+                nn.Linear(token_dim // 4, 2),
+                nn.LogSoftmax(dim=-1),
+            )
+        else:
+            self.out_conv = nn.Sequential(
+                nn.Linear(token_dim, token_dim // 2),
+                nn.GELU(),
+                nn.Linear(token_dim // 2, token_dim // 4),
+                nn.GELU(),
+                nn.Linear(token_dim // 4, 2),
+                nn.LogSoftmax(dim=-1),
+            )
         self.in_conv = nn.Sequential(
             nn.LayerNorm(token_dim),
             nn.Linear(token_dim, token_dim),
             nn.SiLU(),
-        )
-        self.out_conv = nn.Sequential(
-            nn.Linear(token_dim * 2, token_dim),
-            nn.GELU(),
-            nn.Linear(token_dim, token_dim // 4),
-            nn.GELU(),
-            nn.Linear(token_dim // 4, 2),
-            nn.LogSoftmax(dim=-1),
         )
 
     def forward(self, x, query_embeds):
@@ -70,15 +81,31 @@ class TokenScorer(nn.Module):
         x : vision tokens
         query_embeds : text tokens
         """
-        query_embeds = torch.cat([query_embeds, self.query_representation.expand(query_embeds.size(0), -1, -1)], dim=1)
-        query_representation = self.attn(query_embeds)[:, -1, :].unsqueeze(1) # (B, 1, D)
-        x = self.in_conv(x)
-        B, N, C = x.shape
-        local_x = x[:, :, :C // 2]  # [B, N, C//2]
-        global_x = x[:, :, C // 2:].sum(dim=1, keepdim=True) # [B, 1, C//2]
-        query_representation = self.projector(query_representation)
-        x = torch.cat([local_x, global_x.expand(B, N, C//2), query_representation.expand(B, N, C//2)], dim=-1) # B, N, 2C
-        x = self.out_conv(x)
+        if self.config["enable"]:
+            query_embeds = torch.cat([query_embeds, self.query_cls.expand(query_embeds.size(0), -1, -1)], dim=1) # [B, N+1, D]
+            for attn_layer in self.attn_layers:
+                query_embeds = attn_layer(query_embeds)
+            query_rep = query_embeds[:, -1] # (B, C)
+        
+            x = self.in_conv(x)
+            B, N, C = x.shape
+            local_x = x[:, :, :C // 2]  # [B, N, C//2]
+            global_x = x[:, :, C // 2:].sum(dim=1, keepdim=True) # [B, 1, C//2]
+            
+            query_rep = self.projector(query_rep) # [B, C]
+            query_rep_expanded = query_rep.unsqueeze(1).expand(B, N, C) # (B, N, C)
+            
+            x = torch.cat([local_x, global_x.expand(B, N, C//2), query_rep_expanded], dim=-1) # B, N, 2C
+            x = self.out_conv(x)
+        else:
+            x = self.in_conv(x)
+            B, N, C = x.shape
+            local_x = x[:, :, :C // 2]  # [B, N, C//2]
+            global_x = x[:, :, C // 2:].sum(dim=1, keepdim=True) # [B, 1, C//2]
+            
+            x = torch.cat([local_x, global_x.expand(B, N, C//2)], dim=-1) # B, N, C
+            x = self.out_conv(x)
+        
         return x
     
 @register_token_sort("prune_merge_token_sorter")
@@ -98,7 +125,7 @@ class PruneMergeTokenSorter(BaseTokenSorter):
         self.token_dim = self.context.get('out_hidden_size', 2048)
         self.query_dim = self.context.get('out_hidden_size', 2048)
         self.scorer_hidden_dim = self.context.get('scorer_hidden_dim', 256)
-        self.token_scorer = TokenScorer(query_dim=self.query_dim, token_dim=self.token_dim)
+        self.token_scorer = TokenScorer(query_dim=self.query_dim, token_dim=self.token_dim, attn_config={"enable": False, "layers": 2})
 
     def forward(
         self,
@@ -106,6 +133,7 @@ class PruneMergeTokenSorter(BaseTokenSorter):
         lengths: torch.Tensor,
         query_embeddings: Optional[torch.Tensor] = None,
         training: Optional[bool] = False,
+        **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Dict[str, Any]]:
         """执行Token剪枝
         
@@ -120,16 +148,6 @@ class PruneMergeTokenSorter(BaseTokenSorter):
             aux_outputs: 辅助输出字典
         """
         B, N, D = hidden_states.shape
-        if query_embeddings is None:
-            query_embeddings = torch.zeros(
-                B, self.query_dim,
-                device=hidden_states.device,
-                dtype=hidden_states.dtype,
-            )
-        else:
-            if query_embeddings.dtype != hidden_states.dtype:
-                query_embeddings = query_embeddings.to(dtype=hidden_states.dtype)
-
         aux_outputs = {}
         if training:
             device = hidden_states.device
@@ -141,8 +159,9 @@ class PruneMergeTokenSorter(BaseTokenSorter):
             idx = torch.arange(N, device=device).unsqueeze(0)   # (1, N)
             valid_mask = idx < lengths.unsqueeze(-1)            # (1, N) < (B, 1) ==> (B, N)
             valid_mask = valid_mask.unsqueeze(-1)               # (B, N, -1)
-            query_expanded = query_embeddings.unsqueeze(1).expand(B, N, D)
-            binary_scores = self.token_scorer(hidden_states, query_expanded) # (B, N, 2)
+
+            binary_scores = self.token_scorer(hidden_states, query_embeddings) # (B, N, 2)
+            # scores = F.softmax(binary_scores, dim=-1)[:, :, 0] # (B, N)
             hard_mask = F.gumbel_softmax(binary_scores, hard=True)[:, :, 0:1] # (B, N, 1)
             hard_mask = hard_mask * valid_mask
             keep_ratio = hard_mask.sum(dim=1) / lengths.clamp(min=1) # ratio 
@@ -171,8 +190,8 @@ class PruneMergeTokenSorter(BaseTokenSorter):
             idx = torch.arange(N, device=device).unsqueeze(0)   # (1, N)
             valid_mask = idx < lengths.unsqueeze(-1)            # (1, N) < (B, 1) ==> (B, N)
             valid_mask = valid_mask                             # (B, N)
-            query_expanded = query_embeddings.unsqueeze(1).expand(B, N, D)
-            binary_scores = self.token_scorer(hidden_states, query_expanded) # (B, N, 2)
+
+            binary_scores = self.token_scorer(hidden_states, query_embeddings) # (B, N, 2)
             
             hard_mask = binary_scores.argmax(dim=-1) == 0
             hard_mask = hard_mask * valid_mask # (B, N) & (B, N) ==> (B, N)

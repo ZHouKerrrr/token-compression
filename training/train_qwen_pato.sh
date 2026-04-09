@@ -9,21 +9,32 @@ echo "Number of GPUs: $ngpus"
 
 port=${PORT:-12345}
 
+# 3B
+# configs=( \
+# "train_configs/qwen2_5_3b_pato/qwen2_5_3b_pato.yaml" \
+# #"train_configs/qwen2_5_7b_pato/qwen2_5_7b_pato.yaml" \
+# )
+# output_dirs=( \
+# "output/qwen2_5_3b_pato" \
+# #"output/qwen2_5_7b_pato" \
+# )
+# base_models=( \
+# "Qwen/Qwen2.5-VL-3B-Instruct" \
+# #"Qwen/Qwen2.5-VL-7B-Instruct" \
+# )
 
+# 7B
 configs=( \
-"train_configs/qwen2_5_3b_pato/qwen2_5_3b_pato.yaml" \
-# "train_configs/qwen2_5_7b_pato/qwen2_5_7b_pato.yaml" \
+#"train_configs/qwen2_5_3b_pato/qwen2_5_3b_pato.yaml" \
+"train_configs/qwen2_5_7b_pato/qwen2_5_7b_pato.yaml" \
 )
-
-
 output_dirs=( \
-"output/qwen2_5_3b_pato" \
-#"output/qwen2_5_7b_pato" \
+#"output/qwen2_5_3b_pato" \
+"output/qwen2_5_7b_pato" \
 )
-
 base_models=( \
-"Qwen/Qwen2.5-VL-3B-Instruct" \
-#"Qwen/Qwen2.5-VL-7B-Instruct" \
+#"Qwen/Qwen2.5-VL-3B-Instruct" \
+"Qwen/Qwen2.5-VL-7B-Instruct" \
 )
 
 
@@ -46,7 +57,7 @@ for i in "${!configs[@]}"; do
         echo "Training failed for config: $config"
         continue
     fi
-    bash ./tests/test_tokens_ratio.sh
+    # bash ./tests/test_tokens_ratio.sh
     bash ./training/eval_pato.sh  
     # BASE_MODEL=$base_model bash scripts/infer_qwen_pato_cot.sh $output_dir
     # BASE_MODEL=$base_model DO_GLIMPSE=1 bash scripts/infer_qwen_pato_cot.sh $output_dir

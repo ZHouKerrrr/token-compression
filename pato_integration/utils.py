@@ -65,3 +65,10 @@ def expand_vis_transform_to_full(T_vis: torch.Tensor, seq_len: int, s: int, e: i
         T_full[s + N_new:, e:] = torch.eye(tail_len, device=device, dtype=dtype)
 
     return T_full
+
+
+
+def print_rank0(*args, **kwargs):
+    local_rank = int(os.getenv('LOCAL_RANK', '0'))
+    if local_rank == 0:
+        print(*args, **kwargs)

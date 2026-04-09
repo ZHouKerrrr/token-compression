@@ -25,24 +25,9 @@ from lmms_eval.api.instance import Instance
 from lmms_eval import utils
 from lmms_eval.utils import eval_logger
 
-from dataclasses import dataclass, field, asdict
-from trl import TrlParser
-# ==========================================================
-# TODO: 请在这里导入你自定义的 _X 模块 (Monkey Patch 类)
-# 例如：from my_custom_modules import Qwen2_5_VLForConditionalGeneration_X, ...
 from pato_integration import PATOQwen2_5_VLForConditionalGeneration, PATOQwen2_5_VLConfig
 from pato_integration.pato_config import PATOConfig, create_default_pato_config
-# ==========================================================
-# 示例：
-# from your_project_path import (
-#     Qwen2_5_VLForConditionalGeneration_X,
-#     Qwen2_5_VisionTransformerPretrainedModel_X,
-#     Qwen2_5_VLVisionBlock_X,
-#     Qwen2_5_VLVisionSdpaAttention_X,
-#     Qwen2_5_VLVisionFlashAttention2_X,
-#     Qwen2_5_VisionPatchEmbed_X,
-#     Qwen2_5_VLModel_X
-# )
+
 
 
 @register_model("pato_qwen2_5_vl")  # 注册模型名称，运行脚本时传入此名字
@@ -67,6 +52,7 @@ class PATO_Qwen2_5_VL(lmms):
         layer_list: Optional[str] = "0",               # 设定默认值防止报错
         image_token_ratio_list: Optional[str] = "1.0", # 设定默认值防止报错
         image_token_ratio: Optional[float] = 1.0,
+        pato_state_dict_path: Optional[str] = None,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -99,29 +85,12 @@ class PATO_Qwen2_5_VL(lmms):
             model_kwargs["attn_implementation"] = attn_implementation
 
         # 1. 正常加载预训练权重
-        
-  
-
-        base_model_config = Qwen2_5_VLConfig.from_pretrained(pretrained)
-
-        vision_hidden_size = base_model_config.vision_config.hidden_size
-        text_hidden_size = base_model_config.hidden_size
-        # 配置PATO参数，对齐模型维度
-        pato_config = PATOConfig()
-        pato_config.g_raw.text_hidden_size = text_hidden_size
-        pato_config.projector.vision_hidden_size = vision_hidden_size
-        pato_config.projector.hidden_size = text_hidden_size
-        
-        pato_config.g_raw.enable = False
-        pato_config.token_sort.enable = True
-        pato_config.projector.enable = False
-        
-        pato_state_dict_path = "output/qwen2_5_3b_pato/pato_components.pt"
-        
-        self._config = PATOQwen2_5_VLConfig(
-            pato_config,
-            **base_model_config.to_dict()
+        pato_state_dict = torch.load(
+            pato_state_dict_path,
+            map_location=device,
+            weights_only=False,
         )
+        self._config = pato_state_dict["config"]
         
         self._model = PATOQwen2_5_VLForConditionalGeneration.from_pretrained(
             pretrained, 
@@ -130,14 +99,14 @@ class PATO_Qwen2_5_VL(lmms):
             attn_implementation="flash_attention_2",
             torch_dtype=torch.bfloat16,
         ).eval()
-        
-        self._model.load_pato_components(pato_state_dict_path=pato_state_dict_path)
+        self._model.set_route("pato")
+        self._model.load_pato_components(pato_state_dict=pato_state_dict)
         self._model.model.layer_list = list(map(int, str(layer_list).split('-')))
         self._model.model.image_token_ratio_list = list(map(float, str(image_token_ratio_list).split('-')))
         self._model.image_token_ratio = image_token_ratio
-        print("layer_list: ", self._model.model.layer_list)
-        print("image_token_ratio_list", self._model.model.image_token_ratio_list)
-        print("image_token_ratio", self._model.image_token_ratio)
+        # print("layer_list: ", self._model.model.layer_list)
+        # print("image_token_ratio_list", self._model.model.image_token_ratio_list)
+        # print("image_token_ratio", XCUself._model.image_token_ratio)
         processor_kwargs = {"padding_side": "left"}
         if max_pixels is not None:
             processor_kwargs["max_pixels"] = max_pixels
@@ -250,12 +219,11 @@ class PATO_Qwen2_5_VL(lmms):
 
             if isinstance(contexts, tuple):
                 contexts = list(contexts)
-
+            query = contexts.copy()
             batched_messages =[]
             for i, context in enumerate(contexts):
                 if "<image>" in context:
                     context = context.replace("<image>", "")
-
                 message = [{"role": "system", "content": self.system_prompt}]
                 if self.reasoning_prompt:
                     context = context.strip() + self.reasoning_prompt
@@ -320,6 +288,19 @@ class PATO_Qwen2_5_VL(lmms):
                 current_gen_kwargs["top_p"] = None
 
             # 推理生成
+            if query is not None:
+                query_id = self._tokenizer(
+                    query,
+                    padding=True,
+                    truncation=True,
+                    max_length=64,
+                    return_tensors="pt",
+                    add_special_tokens=False,
+                ).to(device=inputs["input_ids"].device)
+                inputs.update({
+                    "query_input_ids": query_id.input_ids,
+                    "query_attention_mask": query_id.attention_mask,
+                })
             cont = self.model.generate(
                 **inputs,
                 eos_token_id=self.tokenizer.eos_token_id,

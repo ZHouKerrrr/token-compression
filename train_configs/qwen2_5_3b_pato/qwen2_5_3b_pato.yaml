@@ -1,29 +1,36 @@
 # Model arguments
 model_name_or_path: Qwen/Qwen2.5-VL-3B-Instruct
-teacher_model_name_or_path: Qwen/Qwen2.5-VL-3B-Instruct
-distill: True
-
-# viscot_rand.yaml or gqa_rand.yaml
 train_dataset: dataset_configs/gqa_rand.yaml
 torch_dtype: bfloat16
-target_size:
-  - 224
-  - 224
-projector_enable: false
-g_raw_enable: false
-token_sort_enable: true
-token_sort_mode: "dynamic_token_sorter"
+teacher_config: 
+  enable: True
+  teacher_model_name_or_path: Qwen/Qwen2.5-VL-3B-Instruct
+pato_args:
+  projector:
+    enable: false
+  g_raw:
+    enable: false
+  token_sort:
+    enable: true
+    mode: "prune_merge_token_sorter"
+    attn_layers: 2
+# token_sort_mode: Optional["dynamic_token_sorter", "prune_merge_token_sorter"]
+
+
 ####  Training arguments  ####
+
 # loss arguments
-lambda_kd_logits: 0.5
-lambda_kd_feature: 0.5
-lambda_distortion: 0.01   # 0.1
-lambda_compact: 0.01
-lambda_tv: 0.01
-lambda_rate: 0.4          # (1e-3)
-# target_rate: 0.25
-temperature_kd_logits: 2.0
-temperature_kd_feature: 2.0
+
+lambda_loss:
+  lambda_kd_logits: 1.0
+  lambda_kd_feature: 1.0 # No use so far
+  lambda_distortion: 0.05   # 0.1
+  lambda_compact: 1e-3
+  lambda_tv: 1e-3
+  lambda_rate: 0.1          # (1e-3)
+  temperature_kd_logits: 2.0
+  temperature_kd_feature: 2.0
+
 # default training arguments
 gradient_checkpointing: true
 output_dir: output/qwen2_5_3b_pato
@@ -41,3 +48,6 @@ warmup_ratio: 0.1
 remove_unused_columns: false
 logging_steps: 10
 save_steps: 500
+
+# Scripts Args
+pato_state_dict_path: output/qwen2_5_3b_pato/pato_components.pt

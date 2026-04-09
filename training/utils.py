@@ -115,7 +115,8 @@ def patch_processor(processor):
     processor.tokenizer.padding_side = "left"
 
 
-def dump_param_freeze_status(model, filepath):
+def dump_param_freeze_status(model, out_dir):
+    filepath = os.path.join(out_dir, f"param_status.txt")
     local_rank = int(os.getenv('LOCAL_RANK', '0'))
     if local_rank == 0:
         with open(filepath, "w") as f:
@@ -463,3 +464,170 @@ def init_pato_config(
     pato_config.projector.hidden_size = base_model_config.hidden_size
 
     return pato_config
+
+
+import torch
+from typing import Dict, Optional, Iterable
+
+
+def check_loss_gradients(
+    losses: Dict[str, torch.Tensor],
+    model: torch.nn.Module,
+    optimizer: Optional[torch.optim.Optimizer] = None,
+    param_filter: Optional[Iterable[str]] = None,
+    retain_graph: bool = True,
+    topk: int = 20,
+):
+    """
+    检查 losses 中每一项 loss 对 model 参数产生的梯度大小。
+
+    Args:
+        losses: 形如 {"task_loss": tensor, "kd_logits_loss": tensor, ...}
+        model: 要检查梯度的模型
+        optimizer: 可选，如果传入则会调用 optimizer.zero_grad(set_to_none=True)
+        param_filter: 可选，只统计名字里包含这些关键字的参数
+                     例如 ["lm_head", "prune", "gate", "projector"]
+        retain_graph: 是否在每次 backward 时保留计算图
+        topk: 打印梯度最大的前 topk 个参数
+
+    Returns:
+        results: dict
+            {
+                loss_name: {
+                    "loss_value": float,
+                    "requires_grad": bool,
+                    "grad_fn": str,
+                    "num_params_with_grad": int,
+                    "total_grad_l1": float,
+                    "total_grad_l2": float,
+                    "max_abs_grad": float,
+                    "param_stats": [
+                        {
+                            "name": str,
+                            "mean_abs_grad": float,
+                            "max_abs_grad": float,
+                            "l2_grad": float,
+                        },
+                        ...
+                    ]
+                },
+                ...
+            }
+    """
+    results = {}
+
+    def match_param(name: str) -> bool:
+        if param_filter is None:
+            return True
+        return any(key in name for key in param_filter)
+
+    named_params = [(n, p) for n, p in model.named_parameters() if p.requires_grad and match_param(n)]
+
+    if len(named_params) == 0:
+        print("[WARN] 没找到符合条件的可训练参数。")
+        return results
+
+    for loss_name, loss_tensor in losses.items():
+        print("\n" + "=" * 80)
+        print(f"[Checking] {loss_name}")
+
+        if loss_tensor is None:
+            print("  -> loss is None, skip")
+            results[loss_name] = {"loss_value": None, "reason": "loss is None"}
+            continue
+
+        if not torch.is_tensor(loss_tensor):
+            print(f"  -> not a tensor: {type(loss_tensor)}, skip")
+            results[loss_name] = {"loss_value": None, "reason": f"not a tensor: {type(loss_tensor)}"}
+            continue
+
+        info = {
+            "loss_value": float(loss_tensor.detach().float().cpu()),
+            "requires_grad": bool(loss_tensor.requires_grad),
+            "grad_fn": str(loss_tensor.grad_fn) if loss_tensor.grad_fn is not None else None,
+            "num_params_with_grad": 0,
+            "total_grad_l1": 0.0,
+            "total_grad_l2": 0.0,
+            "max_abs_grad": 0.0,
+            "param_stats": [],
+        }
+
+        print(f"  value         : {info['loss_value']}")
+        print(f"  requires_grad : {info['requires_grad']}")
+        print(f"  grad_fn       : {info['grad_fn']}")
+
+        if not loss_tensor.requires_grad:
+            print("  -> requires_grad=False，说明这项 loss 已经断图或本来就不可导")
+            results[loss_name] = info
+            continue
+
+        if optimizer is not None:
+            optimizer.zero_grad(set_to_none=True)
+        else:
+            model.zero_grad(set_to_none=True)
+
+        try:
+            loss_tensor.backward(retain_graph=retain_graph)
+        except Exception as e:
+            print(f"  -> backward failed: {repr(e)}")
+            info["reason"] = f"backward failed: {repr(e)}"
+            results[loss_name] = info
+            continue
+
+        param_stats = []
+        total_grad_l2_sq = 0.0
+        total_grad_l1 = 0.0
+        global_max_abs = 0.0
+        num_params_with_grad = 0
+
+        for name, p in named_params:
+            if p.grad is None:
+                continue
+
+            g = p.grad.detach().float()
+            mean_abs = g.abs().mean().item()
+            max_abs = g.abs().max().item()
+            l2 = g.norm(2).item()
+
+            total_grad_l1 += g.abs().sum().item()
+            total_grad_l2_sq += (l2 ** 2)
+            global_max_abs = max(global_max_abs, max_abs)
+            num_params_with_grad += 1
+
+            param_stats.append({
+                "name": name,
+                "mean_abs_grad": mean_abs,
+                "max_abs_grad": max_abs,
+                "l2_grad": l2,
+            })
+
+        param_stats.sort(key=lambda x: x["l2_grad"], reverse=True)
+
+        info["num_params_with_grad"] = num_params_with_grad
+        info["total_grad_l1"] = total_grad_l1
+        info["total_grad_l2"] = total_grad_l2_sq ** 0.5
+        info["max_abs_grad"] = global_max_abs
+        info["param_stats"] = param_stats
+
+        print(f"  num_params_with_grad : {num_params_with_grad}")
+        print(f"  total_grad_l1        : {info['total_grad_l1']:.6e}")
+        print(f"  total_grad_l2        : {info['total_grad_l2']:.6e}")
+        print(f"  max_abs_grad         : {info['max_abs_grad']:.6e}")
+
+        # print(f"  top {min(topk, len(param_stats))} params by l2_grad:")
+        # for item in param_stats[:topk]:
+        #     print(
+        #         f"    {item['name']:<60} "
+        #         f"mean_abs={item['mean_abs_grad']:.6e}  "
+        #         f"max_abs={item['max_abs_grad']:.6e}  "
+        #         f"l2={item['l2_grad']:.6e}"
+        #     )
+
+        results[loss_name] = info
+
+    if optimizer is not None:
+        optimizer.zero_grad(set_to_none=True)
+    else:
+        model.zero_grad(set_to_none=True)
+
+    return results
