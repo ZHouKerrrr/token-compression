@@ -293,10 +293,14 @@ class PATOTrainer(Trainer):
                 # )
                 loss = sum(losses.values())
                 if self.state.global_step % 50 == 0:
+                    print_rank0(f"keep ratio: {aux_outputs['keep_ratio']}")
                     if self.print_loss % 4 == 0: 
-                        print_rank0(f"keep ratio: {aux_outputs['keep_ratio']}")
+                        
                         for key in losses.keys():
-                            print_rank0(f"{key}: {losses[key]}")
+                            if key == "rate_loss":
+                                print_rank0(f"{key}: {losses[key][0]}")
+                            else:
+                                print_rank0(f"{key}: {losses[key]}")
                     self.print_loss += 1
                     
             else:
