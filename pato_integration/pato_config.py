@@ -136,6 +136,14 @@ class PATOQwen2_5_VLConfig(Qwen2_5_VLConfig):
             self.pato_config = pato_config
         super().__init__(**kwargs)
         
+        # 
+        if self.pato_config.g_raw.enable:
+            raise NotImplementedError()
+        if self.pato_config.token_sort.enable:
+            self.pato_config.token_sort.text_hidden_size = self.vision_config.out_hidden_size
+        if self.pato_config.projector.enable:
+            raise NotImplementedError()
+        
     @staticmethod
     def _dict_to_pato_config(config_dict: dict) -> PATOConfig:
         """Convert dictionary to PATOConfig dataclass"""

@@ -333,32 +333,12 @@ class PATOQwen2_5_VisionTransformer(Qwen2_5_VisionTransformerPretrainedModel):
         else:
             return hidden_states, aux_outputs
 
-class PATOQwen2_5_VLRotaryEmbedding(Qwen2_5_VLRotaryEmbedding):
-    def __init__(self, config: Qwen2_5_VLConfig, device=None):
-        super().__init__(config, device)
-
-    @torch.no_grad()
-    @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
-    def forward(self, x, position_ids):
-        # In contrast to other models, Qwen2_5_VL has different position ids for the grids
-        # So we expand the inv_freq to shape (3, ...)
-        inv_freq_expanded = self.inv_freq[None, None, :, None].float().expand(3, position_ids.shape[1], -1, 1)
-        position_ids_expanded = position_ids[:, :, None, :].float()  # shape (3, bs, 1, positions)
-
-        device_type = x.device.type if isinstance(x.device.type, str) and x.device.type != "mps" else "cpu"
-        with torch.autocast(device_type=device_type, enabled=False):  # Force float32
-            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(2, 3)
-            emb = torch.cat((freqs, freqs), dim=-1)
-            cos = emb.cos() * self.attention_scaling
-            sin = emb.sin() * self.attention_scaling
-
-        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
-
 class PATOAttention(Qwen2_5_VLAttention):
     def __init__(self, config: Qwen2_5_VLConfig, layer_idx: Optional[int] = None):
         super().__init__(config, layer_idx)
-        
-    def softmax_with_mask(self, attn, prune_mask, eps=1e-6):
+    
+    @staticmethod
+    def softmax_with_mask(attn, prune_mask, eps=1e-6):
         B, N = prune_mask.size()
         B, H, N, N = attn.size()
         attn_prune_mask = prune_mask.reshape(B, 1, 1, N)  # * prune_mask.reshape(B, 1, N, 1)
@@ -423,7 +403,7 @@ class PATOAttention(Qwen2_5_VLAttention):
         if prune_mask is None:
             attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
         else:
-            attn_weights = self.softmax_with_mask(attn=attn_weights, prune_mask=prune_mask)
+            attn_weights = PATOAttention.softmax_with_mask(attn=attn_weights, prune_mask=prune_mask)
         attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
         attn_output = torch.matmul(attn_weights, value_states)
 
@@ -453,13 +433,14 @@ class PATOQwen2_5_VLDecoderLayer(nn.Module):
                 "unexpected results may be encountered."
             )
         # self.qwen_attn = QWEN2_5_VL_ATTENTION_CLASSES[config._attn_implementation]
-        self.self_attn = PATOAttention(config, layer_idx)
+        self.self_attn = QWEN2_5_VL_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
+        self.train_attn = PATOAttention # QWEN2_5_VL_ATTENTION_CLASSES[config._attn_implementation]
         # self.self_attn = QWEN2_5_VL_ATTENTION_CLASSES[config._attn_implementation](config, layer_idx)
         self.mlp = Qwen2MLP(config)
         self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-    def forward(
+    def train_forward(
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
@@ -498,7 +479,8 @@ class PATOQwen2_5_VLDecoderLayer(nn.Module):
         hidden_states = self.input_layernorm(hidden_states)
 
         # Self Attention
-        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+        hidden_states, self_attn_weights, present_key_value = self.train_attn.forward(
+            self.self_attn,
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -526,8 +508,108 @@ class PATOQwen2_5_VLDecoderLayer(nn.Module):
             outputs += (present_key_value,)
 
         return outputs
+    
+    def eval_forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+        """
+        Args:
+            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
+            attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
+                `(batch, sequence_length)` where padding elements are indicated by 0.
+            output_attentions (`bool`, *optional*):
+                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
+                returned tensors for more detail.
+            use_cache (`bool`, *optional*):
+                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
+                (see `past_key_values`).
+            past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
+            cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
+                Indices depicting the position of the input sequence tokens in the sequence.
+            position_embeddings (`Tuple[torch.FloatTensor, torch.FloatTensor]`, *optional*):
+                Tuple containing the cosine and sine positional embeddings of shape `(batch_size, seq_len, head_dim)`,
+                with `head_dim` being the embedding dimension of each attention head.
+            kwargs (`dict`, *optional*):
+                Arbitrary kwargs to be ignored, used for FSDP and other methods that injects code
+                into the model
+        """
 
+        residual = hidden_states
 
+        hidden_states = self.input_layernorm(hidden_states)
+
+        # Self Attention
+        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_value=past_key_value,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+        )
+        hidden_states = residual + hidden_states
+
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        hidden_states = residual + hidden_states
+
+        outputs = (hidden_states,)
+
+        if output_attentions:
+            outputs += (self_attn_weights,)
+
+        if use_cache:
+            outputs += (present_key_value,)
+
+        return outputs
+    
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        prune_mask = None,
+    ):
+        if self.training:
+            return self.train_forward(
+                hidden_states,
+                attention_mask,
+                position_ids,
+                past_key_value,
+                output_attentions,
+                use_cache,
+                cache_position,
+                position_embeddings,  # necessary, but kept here for BC
+                prune_mask,
+            )
+        else:
+            return self.eval_forward(
+                hidden_states,
+                attention_mask,
+                position_ids,
+                past_key_value,
+                output_attentions,
+                use_cache,
+                cache_position,
+                position_embeddings,
+            )
 class PATOQwen2_5_VLModel(Qwen2_5_VLPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
@@ -1005,10 +1087,12 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
                 hard_prune_mask = vision_aux.get("hard_prune_mask", None)
                 soft_prune_mask = vision_aux.get("soft_prune_mask", None)
                 transform_matrices = vision_aux.get("transform_matrices", None)
+                
              # endpoint for testing
             if self.pato_config.evaluate:
                 return vision_aux
             
+
             s_idx = (input_ids == vision_start_token_id).long().argmax(dim=1) + 1
             e_idx = (input_ids == vision_end_token_id).long().argmax(dim=1)
             vision_token_nums = e_idx - s_idx

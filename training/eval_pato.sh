@@ -23,8 +23,8 @@ eval_list=( \
 "scienceqa_img" \
 "pope" \
 "mme" \
-"mmbench_en_test" \
-"mmbench_cn_test" \
+# "mmbench_en_test" \ # 看不了结果
+# "mmbench_cn_test" \
 "seedbench" \
 "vstar_bench" \
 "gqa" \

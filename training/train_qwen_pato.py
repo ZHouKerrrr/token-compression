@@ -53,7 +53,7 @@ from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
     Qwen2_5_VLConfig,
 )
 from g_raw import WeightedDownsample
-from token_sort import DifferentiableSortingTokenSorter
+from token_sort import PruneMergeTokenSorter
 from pato_integration.loss import create_pato_loss
 from training.data_loader import create_vqa_dataloader
 
@@ -163,7 +163,7 @@ class TauAnnealingCallback(TrainerCallback):
         # 注意：使用 model.modules() 可以穿透 DDP / DeepSpeed 等各种包装器，直达最底层的子模块
         for module in model.modules():
             # 判断是不是你的剪枝模块。可以通过类名，或者检查是否含有 specific 属性
-            if type(module).__name__ == "HardTokenSorter" or hasattr(module, 'current_progress'):
+            if isinstance(module, PruneMergeTokenSorter):
                 module.current_progress = progress
 
 class PATOTrainer(Trainer):
@@ -275,27 +275,25 @@ class PATOTrainer(Trainer):
                         return_dict=True,
                         output_hidden_states=output_hidden_states,
                     )
-
+                # -----  rate loss 反向退火  ----- #
+                if "lambda_rate" in self.lambda_loss:
+                    progress = self.state.global_step / self.state.max_steps # 0.00 -> 1.00
+                    progress = torch.clamp(torch.tensor(progress, dtype=torch.float32), 0.0, 1.0)
+                    lambda_loss = self.lambda_loss.copy()
+                    lambda_loss['lambda_rate'] = lambda_loss['lambda_rate_start'] + (lambda_loss['lambda_rate'] -  lambda_loss['lambda_rate_start']) * 0.5 * (1 - torch.cos(torch.pi * progress)) # 0.10 -> 1.00
                 losses = self.pato_loss_fct(
                     inputs=inputs,
                     labels=labels,
-                    lambda_loss=self.lambda_loss,
+                    lambda_loss=lambda_loss,
                     students_outputs=outputs,
                     teacher_outputs=teacher_outputs,
                 )
-                # grad_info = check_loss_gradients(
-                #     losses=losses,
-                #     model=self.model,   # 你的 student model
-                #     optimizer=self.optimizer,
-                #     param_filter=None,  # 检查全部参数
-                #     retain_graph=True,
-                #     topk=20,
-                # )
+
                 loss = sum(losses.values())
                 if self.state.global_step % 50 == 0:
-                    print_rank0(f"keep ratio: {aux_outputs['keep_ratio']}")
-                    if self.print_loss % 4 == 0: 
-                        
+                    print_rank0(f"keep ratio: {aux_outputs['keep_ratio'].item(), aux_outputs['_keep_ratio'].item()}")
+                    if self.print_loss % 8 == 0: 
+                        print_rank0(f"progress, lambda", progress, lambda_loss['lambda_rate'],)
                         for key in losses.keys():
                             if key == "rate_loss":
                                 print_rank0(f"{key}: {losses[key][0]}")
@@ -403,12 +401,10 @@ def main():
         processor,
         script_args,
     ) if script_args.train_dataset else None
-
     collator = PATOCollator(
         processor=processor,
         is_sft=True,
     )
-
     trainer = PATOTrainer(
         model=model,
         teacher_model=teacher_model,
@@ -418,12 +414,7 @@ def main():
         processing_class=processor.tokenizer,
         callbacks=[TauAnnealingCallback()],
     )
-    # train_dataloader = trainer.get_train_dataloader()
-    # evaluate_batch(model, train_dataloader, processor)
-    # return
-    # test model
-    # test_model(model=model, trainer=trainer, train_dataset=train_dataset, collator=collator)
-    # return
+
     # ------------ Training ------------ #
     # 训练循环
     print_rank0("\n" + "="*60)

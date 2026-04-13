@@ -72,3 +72,21 @@ def print_rank0(*args, **kwargs):
     local_rank = int(os.getenv('LOCAL_RANK', '0'))
     if local_rank == 0:
         print(*args, **kwargs)
+
+
+# model method
+
+def softmax_with_mask(attn, prune_mask, eps=1e-6):
+    B, N = prune_mask.size()
+    B, H, N, N = attn.size()
+    attn_prune_mask = prune_mask.reshape(B, 1, 1, N)  # * prune_mask.reshape(B, 1, N, 1)
+    eye = torch.eye(N, dtype=attn_prune_mask.dtype, device=attn_prune_mask.device).view(1, 1, N, N)
+    attn_prune_mask = attn_prune_mask + (1.0 - attn_prune_mask) * eye
+    max_att = torch.max(attn, dim=-1, keepdim=True)[0]
+    attn = attn - max_att
+
+    # for stable training
+    # e^z * mask / (e^z) (mask == 1)
+    attn = attn.to(torch.float32).exp_() * attn_prune_mask.to(torch.float32)
+    attn = (attn + eps/N) / (attn.sum(dim=-1, keepdim=True) + eps)
+    return attn.type_as(max_att)

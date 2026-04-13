@@ -22,12 +22,13 @@ pato_args:
 # loss arguments
 
 lambda_loss:
-  lambda_kd_logits: 0.5
-  lambda_mse_feature: 0.5
-  lambda_distortion: 0.01
+  lambda_kd_logits: 0.125
+  lambda_mse_feature: 0.25
+  lambda_distortion: 0.05
   # lambda_compact: 1e-3
   # lambda_tv: 1e-3
-  lambda_rate: 1.0           # (1e-3)
+  lambda_rate: 1.0                # (1e-3)
+  lambda_rate_start: 0.1
   temperature_kd_logits: 2.0
   temperature_kd_feature: 2.0
 
@@ -41,7 +42,7 @@ attn_implementation: flash_attention_2
 # attn_implementation: pato
 per_device_train_batch_size: 1
 gradient_accumulation_steps: 8
-learning_rate: 5e-5
+learning_rate: 1e-4
 num_train_epochs: 1
 lr_scheduler_type: cosine
 warmup_ratio: 0.1

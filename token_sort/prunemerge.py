@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence, unpad_sequence
 import math
-
+from pato_integration.utils import *
 from .base import BaseTokenSorter, register_token_sort
 
 class AttentionLayer(nn.Module):
@@ -43,6 +43,14 @@ class TokenScorer(nn.Module):
     ):
         super().__init__()
         self.config = attn_config
+        # self.global_gate = nn.Parameter(torch.tensor(0.0))  # sigmoid 后大约 0.5
+        self.in_conv = nn.Sequential(
+            nn.LayerNorm(token_dim),
+            nn.Linear(token_dim, token_dim),
+            nn.GELU(),
+        )
+        # self.local_layernorm = nn.LayerNorm(token_dim // 2)
+        # self.global_layernorm = nn.LayerNorm(token_dim // 2)
         if attn_config["enable"]:
             self.query_cls = nn.Parameter(torch.randn(1, 1, token_dim) * 0.02)
             self.attn_layers = nn.ModuleList(
@@ -62,19 +70,20 @@ class TokenScorer(nn.Module):
                 nn.LogSoftmax(dim=-1),
             )
         else:
+            self.projector = nn.Sequential(
+                nn.Linear(query_dim, token_dim),
+                nn.LayerNorm(token_dim),
+                nn.Dropout(0.1)
+            )
             self.out_conv = nn.Sequential(
-                nn.Linear(token_dim, token_dim // 2),
+                nn.Linear(token_dim * 2, token_dim),
                 nn.GELU(),
-                nn.Linear(token_dim // 2, token_dim // 4),
+                nn.Linear(token_dim, token_dim // 4),
                 nn.GELU(),
                 nn.Linear(token_dim // 4, 2),
                 nn.LogSoftmax(dim=-1),
             )
-        self.in_conv = nn.Sequential(
-            nn.LayerNorm(token_dim),
-            nn.Linear(token_dim, token_dim),
-            nn.SiLU(),
-        )
+
 
     def forward(self, x, query_embeds):
         """
@@ -101,9 +110,13 @@ class TokenScorer(nn.Module):
             x = self.in_conv(x)
             B, N, C = x.shape
             local_x = x[:, :, :C // 2]  # [B, N, C//2]
-            global_x = x[:, :, C // 2:].sum(dim=1, keepdim=True) # [B, 1, C//2]
-            
-            x = torch.cat([local_x, global_x.expand(B, N, C//2)], dim=-1) # B, N, C
+            global_x = x[:, :, C // 2:].mean(dim=1, keepdim=True) # [B, 1, C//2]
+            query_embeds = query_embeds.mean(dim=1, keepdim=True) # [B, 1, H]
+            query_embeds = self.projector(query_embeds)
+            # local_x = self.local_layernorm(local_x)
+            # global_x = self.global_layernorm(global_x)
+            # g = torch.sigmoid(self.global_gate)
+            x = torch.cat([local_x, global_x.expand(B, N, C//2), query_embeds.expand(B, N, C)], dim=-1) # B, N, C
             x = self.out_conv(x)
         
         return x
@@ -124,9 +137,22 @@ class PruneMergeTokenSorter(BaseTokenSorter):
     def _setup_module(self) -> None:
         self.token_dim = self.context.get('out_hidden_size', 2048)
         self.query_dim = self.context.get('out_hidden_size', 2048)
-        self.scorer_hidden_dim = self.context.get('scorer_hidden_dim', 256)
-        self.token_scorer = TokenScorer(query_dim=self.query_dim, token_dim=self.token_dim, attn_config={"enable": False, "layers": 2})
+        # tau作退火
+        self.current_progress = 0.0
+        self.tau_start = self.context.get('tau_start', 1.0)
+        self.tau_end = self.context.get('tau_end', 0.01)
+        self.token_scorer = TokenScorer(
+            query_dim=self.query_dim, 
+            token_dim=self.token_dim, 
+            attn_config={"enable": False, "layers": 2}
+        )
 
+    def get_current_tau(self):
+        p = float(self.current_progress)
+        p = max(0.0, min(1.0, p))  # clamp 到 [0, 1]
+        tau = self.tau_start + (self.tau_end - self.tau_start) * p
+        return tau
+        
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -148,32 +174,47 @@ class PruneMergeTokenSorter(BaseTokenSorter):
             aux_outputs: 辅助输出字典
         """
         B, N, D = hidden_states.shape
+        device = hidden_states.device
+        first_param = next(self.token_scorer.parameters())
+        if first_param.device != device:
+            self.token_scorer.to(device)
+            
         aux_outputs = {}
         if training:
-            device = hidden_states.device
-            first_param = next(self.token_scorer.parameters())
-            if first_param.device != device:
-                self.token_scorer.to(device)
-            
-            B, N, D = hidden_states.shape
             idx = torch.arange(N, device=device).unsqueeze(0)   # (1, N)
             valid_mask = idx < lengths.unsqueeze(-1)            # (1, N) < (B, 1) ==> (B, N)
-            valid_mask = valid_mask.unsqueeze(-1)               # (B, N, -1)
+            valid_mask = valid_mask                             # (B, N,)
 
             binary_scores = self.token_scorer(hidden_states, query_embeddings) # (B, N, 2)
             # scores = F.softmax(binary_scores, dim=-1)[:, :, 0] # (B, N)
-            hard_mask = F.gumbel_softmax(binary_scores, hard=True)[:, :, 0:1] # (B, N, 1)
+            keep_prob = F.softmax(binary_scores, dim=-1)
+            index = keep_prob.max(-1, keepdim=True)[1]
+            y_hard = torch.zeros_like(
+                binary_scores, memory_format=torch.legacy_contiguous_format
+            ).scatter_(-1, index, 1.0)
+            ret = y_hard - keep_prob.detach() + keep_prob
+            ret = ret[:, :, 0:1] * valid_mask.unsqueeze(-1)
+            keep_ratio = ret.sum(dim=1) / lengths.clamp(min=1)
+            
+            soft_mask = F.gumbel_softmax(binary_scores, tau=self.get_current_tau(), hard=True)[:, :, 0:1] # (B, N, 1)
+            soft_mask = soft_mask * valid_mask.unsqueeze(-1)
+            _keep_ratio = soft_mask.sum(dim=1) / lengths.clamp(min=1) # ratio 
+
+            hard_mask = binary_scores.argmax(dim=-1) == 0
             hard_mask = hard_mask * valid_mask
-            keep_ratio = hard_mask.sum(dim=1) / lengths.clamp(min=1) # ratio 
+            __keep_ratio = hard_mask.sum(dim=1) / lengths.clamp(min=1) # ratio 
   
             aux_outputs = {
-                'soft_prune_mask': hard_mask,
+                'soft_prune_mask': soft_mask,
                 'keep_ratio': keep_ratio,
+                
+                'binary_scores': binary_scores,
+                "keep_prob": keep_prob,
+                
+                '_keep_ratio': _keep_ratio,
             }
             return None, aux_outputs
         else:
-            # 提取被保留的 Tokens
-            # TODO 修改以下代码：
             """
                 1.将binary_scores[:,:,0] 离散地分为3档: 
                     丢弃:0-0.2 
@@ -182,17 +223,12 @@ class PruneMergeTokenSorter(BaseTokenSorter):
                 2. 在推理阶段，待融合的tokens通过image_grid_thw找到若干聚类中心，并将待融合的tokens与聚类中心进行融合（例如加权平均），得到新的token特征。
                 3. 第2点的聚类中心用矩阵乘法实现，并将矩阵保留
             """
-            device = hidden_states.device
-            first_param = next(self.token_scorer.parameters())
-            if first_param.device != device:
-                self.token_scorer.to(device)
-            B, N, D = hidden_states.shape
             idx = torch.arange(N, device=device).unsqueeze(0)   # (1, N)
             valid_mask = idx < lengths.unsqueeze(-1)            # (1, N) < (B, 1) ==> (B, N)
             valid_mask = valid_mask                             # (B, N)
 
             binary_scores = self.token_scorer(hidden_states, query_embeddings) # (B, N, 2)
-            
+            keep_prob = F.softmax(binary_scores, dim=-1)
             hard_mask = binary_scores.argmax(dim=-1) == 0
             hard_mask = hard_mask * valid_mask # (B, N) & (B, N) ==> (B, N)
             keep_ratio = hard_mask.sum(dim=1) / lengths.clamp(min=1) # ratio 
@@ -205,6 +241,7 @@ class PruneMergeTokenSorter(BaseTokenSorter):
                 "filtered_lengths": filtered_lengths,
                 "hard_prune_mask": hard_mask,
                 'keep_ratio': keep_ratio,
+                "keep_prob": keep_prob,
             }) 
             #print(f"DynamicTokenSorter: keep_ratio={keep_ratio.mean().item():.4f}")
             # 把 batch 压扁（flat）成 1 维变长序列

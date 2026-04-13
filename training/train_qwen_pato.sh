@@ -58,7 +58,7 @@ for i in "${!configs[@]}"; do
         continue
     fi
     # bash ./tests/test_tokens_ratio.sh
-    bash ./training/eval_pato.sh  
+    bash ./training/eval_pato_lite.sh  
     # BASE_MODEL=$base_model bash scripts/infer_qwen_pato_cot.sh $output_dir
     # BASE_MODEL=$base_model DO_GLIMPSE=1 bash scripts/infer_qwen_pato_cot.sh $output_dir
     # BASE_MODEL=$base_model MAX_REMAIN_RATIO=0.111 bash scripts/infer_qwen_pato_cot.sh $output_dir
