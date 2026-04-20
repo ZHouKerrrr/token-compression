@@ -1,63 +1,27 @@
 import os
 import re
 import ast
+import cv2
 import math
 import yaml
-import warnings
 from datetime import datetime
-from dataclasses import dataclass, field
-from collections import defaultdict
 from typing import Any, Callable, Optional, Union, Sized, Dict, Tuple, List, Literal, Type
+from PIL import Image, ImageOps
+import numpy as np
 
-import numpy as np
-import numpy as np
 import torch
 from torch import nn
 import torch.nn.functional as F
 
 import datasets
 
-from PIL import Image
-
-from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config
-from trl.models import unwrap_model_for_generation
-
-from transformers import (
-    TrainingArguments, 
-    Trainer,
-    GenerationConfig,
-)
-from transformers.modeling_utils import PreTrainedModel
-from transformers.utils import (
-    is_safetensors_available, 
-    is_peft_available
-)
 from transformers.models.qwen2_5_vl import (
     Qwen2_5_VLProcessor,
 )
-if is_safetensors_available():
-    import safetensors.torch
-from peft import PeftConfig, get_peft_model, PeftModel
-from accelerate.utils import is_peft_model, set_seed
-
 from qwen_vl_utils import process_vision_info
-
 from training.utils import (                            
     print_rank0,
     norm_bboxes,
-)
-
-from transformers.trainer import (
-    logger,
-    TRAINING_ARGS_NAME,
-    CONFIG_NAME,
-    ADAPTER_WEIGHTS_NAME,
-    ADAPTER_SAFE_WEIGHTS_NAME,
-    WEIGHTS_NAME,
-    WEIGHTS_INDEX_NAME,
-    SAFE_WEIGHTS_NAME,
-    SAFE_WEIGHTS_INDEX_NAME,
-    FSDP_MODEL_NAME,
 )
 
 
@@ -190,6 +154,7 @@ def inputs_seq_length_dataset_filter(one_data, **kwargs):
     text = processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
+    # print(text)
     image_inputs, video_inputs = process_vision_info(messages)
     inputs = processor(
             text=text,
@@ -531,7 +496,12 @@ class PATOCollator:
         text = self.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=(not self.is_sft)
         )
+        
+        # TODO: 需要修改text格式，插入图片的缩略图以及对应的prompt
         image_inputs, video_inputs = process_vision_info(messages)
+
+        image_inputs[0] = ImageOps.mirror(image_inputs[0])    
+        image_inputs[0] = ImageOps.flip(image_inputs[0])
         inputs = self.processor(
             text=text,
             # normed_bboxes=normed_bboxes,

@@ -98,8 +98,9 @@ class PATO_Qwen2_5_VL(lmms):
             device_map="cuda",
             attn_implementation="flash_attention_2",
             torch_dtype=torch.bfloat16,
-        ).eval()
+        )
         self._model.load_pato_components(pato_state_dict=pato_state_dict)
+        self._model.eval()
         self._model.model.layer_list = list(map(int, str(layer_list).split('-')))
         self._model.model.image_token_ratio_list = list(map(float, str(image_token_ratio_list).split('-')))
         self._model.image_token_ratio = image_token_ratio

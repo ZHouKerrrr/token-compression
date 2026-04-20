@@ -25,10 +25,10 @@ eval_list=( \
 "mme" \
 # "mmbench_en_test" \ # 看不了结果
 # "mmbench_cn_test" \
-"seedbench" \
-"vstar_bench" \
-"gqa" \
-"vizwiz_vqa_val" \
+# "seedbench" \
+# "vstar_bench" \
+# "gqa" \
+# "vizwiz_vqa_val" \
 )
 
 for task in ${eval_list[@]}

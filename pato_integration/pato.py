@@ -162,7 +162,11 @@ class PATOSimplifiedProjector(nn.Module):
             projected_tokens: [B, N, hidden_dim]
         """
         return self.projection(vision_tokens)
-
+"""
+TODO:
+    实现vision blk的overlap，让token
+      sort能看到更多的视觉上下文
+"""
 class PATOQwen2_5_VisionTransformer(Qwen2_5_VisionTransformerPretrainedModel):
     """Extended Vision Transformer with Token Sort
     
@@ -306,15 +310,15 @@ class PATOQwen2_5_VisionTransformer(Qwen2_5_VisionTransformerPretrainedModel):
                 batch_first=True,
             ).to(device) # [B, max_len, dim]
             lengths = torch.as_tensor([v.size(0) for v in hidden_states], device=device).to(hidden_states.device)
+            tokens_grid_thw = grid_thw.clone()
+            tokens_grid_thw[:, 1:] = tokens_grid_thw[:, 1:] // self.spatial_merge_size
             sorted_tokens, sort_aux = self.token_sorter(
                 hidden_states=hidden_states,
                 lengths=lengths,
                 query_embeddings=query_embeddings,
-                image_grid_thw=grid_thw,
-                training=self.training
+                grid_thw=tokens_grid_thw,
             ) # [seq, dim]
             aux_outputs.update(sort_aux)
-
         else:
             # If sort is disabled, ensure variable name consistency
             return hidden_states
@@ -1031,27 +1035,17 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
         pad_token_id = 151643
         label_pad = -100
 
-        # ============================================================
-        # Step 1: Extract text embeddings for conditioning
-        # ============================================================
         if query_input_ids is not None and query_attention_mask is not None:
             query_embeds = self.get_text_embeddings(query_input_ids, query_attention_mask)
         else:
             query_embeds = None
 
-
-        # ============================================================
-        # Step 2: g_raw Compression (显存优化版)
-        # ============================================================
         if self.g_raw is not None and pixel_values is not None and query_embeds is not None:
             # ✅ 不要 inplace 改原来的 image_grid_thw
             # TODO：
             # 暂时不考虑g_raw
             pass
-
-        # ============================================================
-        # Step 3: Call parent forward with potentially modified inputs
-        # ============================================================
+        
         if position_ids is None:
             position_ids, rope_deltas = self.get_rope_index(
                 input_ids=input_ids,
@@ -1063,7 +1057,7 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
             self.rope_deltas = rope_deltas
         else:
             rope_deltas = None
-        
+
         if pixel_values is not None:
             # Encode vision
             grid_thw = image_grid_thw if image_grid_thw is not None else video_grid_thw
@@ -1082,100 +1076,96 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
                     grid_thw=grid_thw,
                     query_embeddings=query_embeds,
                 )
-           
             if vision_aux is not None:
                 hard_prune_mask = vision_aux.get("hard_prune_mask", None)
                 soft_prune_mask = vision_aux.get("soft_prune_mask", None)
                 transform_matrices = vision_aux.get("transform_matrices", None)
+
+                # endpoint for testing
+
+                s_idx = (input_ids == vision_start_token_id).long().argmax(dim=1) + 1
+                e_idx = (input_ids == vision_end_token_id).long().argmax(dim=1)
+                vision_token_nums = e_idx - s_idx
+                vision_seq_lens = (image_grid_thw[:, 0] * image_grid_thw[:, 1] * image_grid_thw[:, 2]) // (self.vision_config.spatial_merge_size ** 2)
+                assert torch.equal(vision_seq_lens, vision_token_nums), "Vision tokens in input_ids have equal to image_grids"
+                B, seq_len = input_ids.shape
+                device = input_ids.device
+
+                if hard_prune_mask is not None:
+                    # mask of position_ids and input_ids and attn_mask
+                    pos_mask = torch.ones(
+                        position_ids.shape,
+                        device=position_ids.device,
+                        dtype=torch.bool,
+                    ) # [3, B, vt]
+                    input_attn_mask = torch.ones(
+                        input_ids.shape,
+                        device=input_ids.device,
+                        dtype=torch.bool,
+                    ) # [B, vt]
+                    seq_arange = torch.arange(seq_len, device=device).unsqueeze(0)
+                    vision_mask = (seq_arange >= s_idx.unsqueeze(1)) & (seq_arange < e_idx.unsqueeze(1))
+                    max_vision_len = hard_prune_mask.shape[1]
+                    sorter_arange = torch.arange(max_vision_len, device=device).unsqueeze(0)    # [1, max_vision_len]
+                    valid_hard_prune_mask = sorter_arange < vision_token_nums.unsqueeze(1)      # [B, vision_token_seq]
+                    valid_sorter_values = hard_prune_mask[valid_hard_prune_mask]                # [total_vision_seq_len, 1]
+                    input_attn_mask[vision_mask] = valid_sorter_values
+                    pos_mask[:, vision_mask] = valid_sorter_values
+                    batch_valid_counts = input_attn_mask.sum(dim=1) # [B]
+                    max_seq_len = batch_valid_counts.max().item()
+                    input_ids = reorganize_tensor(input_ids, (B, max_seq_len), pad_token_id, batch_valid_counts, input_attn_mask)
+                    attention_mask = reorganize_tensor(attention_mask, (B, max_seq_len), 0, batch_valid_counts, input_attn_mask)
+                    position_ids = reorganize_tensor(position_ids, (3, B, max_seq_len), 0, batch_valid_counts, pos_mask)
+
+                elif soft_prune_mask is not None:
+                    seq_arange = torch.arange(seq_len, device=device).unsqueeze(0)
+                    vision_mask = (seq_arange >= s_idx.unsqueeze(1)) & (seq_arange < e_idx.unsqueeze(1))
+
+                    max_vision_len = soft_prune_mask.shape[1]
+                    sorter_arange = torch.arange(max_vision_len, device=device).unsqueeze(0)  
+                    valid_hard_prune_mask = sorter_arange < vision_token_nums.unsqueeze(1)  # (B, vision_token_seq)
+                    valid_sorter_values = soft_prune_mask[valid_hard_prune_mask].squeeze(-1) # (total_vision_seq_len, 1)
+                    llm_prune_mask = torch.ones(attention_mask.shape, dtype=soft_prune_mask.dtype, device=attention_mask.device)
+
+                    llm_prune_mask[vision_mask] = valid_sorter_values
+                    aux_outputs.update({"llm_prune_mask": llm_prune_mask})
                 
-             # endpoint for testing
-            if self.pato_config.evaluate:
-                return vision_aux
-            
+                elif transform_matrices is not None:
+                    new_pos_ids_list = []
+                    seq_len = position_ids.shape[-1]
+                    for i, trans_matrix in enumerate(transform_matrices):
+                        full_trans_matrix = expand_vis_transform_to_full(trans_matrix, seq_len, s_idx[i], e_idx[i]) # [S_new, S]
+                        new_position_ids = torch.matmul(full_trans_matrix, position_ids[:, i, :].to(full_trans_matrix.dtype).transpose(0, 1)).transpose(0, 1) # [3, S_new]
+                        new_pos_ids_list.append(new_position_ids)
+                    position_ids = pad_sequence(new_pos_ids_list, batch_first=True).transpose(0, 1) # [3, B, S_new]
+                    
+                    filtered_lengths = aux_outputs["filtered_lengths"]  # [B]
+                    max_vision_len = max(vision_token_nums).item()
 
-            s_idx = (input_ids == vision_start_token_id).long().argmax(dim=1) + 1
-            e_idx = (input_ids == vision_end_token_id).long().argmax(dim=1)
-            vision_token_nums = e_idx - s_idx
-            vision_seq_lens = (image_grid_thw[:, 0] * image_grid_thw[:, 1] * image_grid_thw[:, 2]) // (self.vision_config.spatial_merge_size ** 2)
-            assert torch.equal(vision_seq_lens, vision_token_nums), "Vision tokens in input_ids have equal to image_grids"
-            B, seq_len = input_ids.shape
-            device = input_ids.device
+                    input_attn_mask = torch.ones(
+                        input_ids.shape,
+                        device=input_ids.device,
+                        dtype=torch.bool,
+                    ) # [B, S]
+                    prune_mask = (
+                        torch.arange(max_vision_len, device=filtered_lengths.device)
+                        .unsqueeze(0)                                  # [1, max_vision_len]
+                        < filtered_lengths.unsqueeze(1)                # [B, 1]
+                    ).to(device)                                   # 或者 .to(torch.bool)
 
-            if hard_prune_mask is not None:
-                # mask of position_ids and input_ids and attn_mask
-                pos_mask = torch.ones(
-                    position_ids.shape,
-                    device=position_ids.device,
-                    dtype=torch.bool,
-                ) # [3, B, vt]
-                input_attn_mask = torch.ones(
-                    input_ids.shape,
-                    device=input_ids.device,
-                    dtype=torch.bool,
-                ) # [B, vt]
-                seq_arange = torch.arange(seq_len, device=device).unsqueeze(0)
-                vision_mask = (seq_arange >= s_idx.unsqueeze(1)) & (seq_arange < e_idx.unsqueeze(1))
-                max_vision_len = hard_prune_mask.shape[1]
-                sorter_arange = torch.arange(max_vision_len, device=device).unsqueeze(0)    # [1, max_vision_len]
-                valid_hard_prune_mask = sorter_arange < vision_token_nums.unsqueeze(1)      # [B, vision_token_seq]
-                valid_sorter_values = hard_prune_mask[valid_hard_prune_mask]                # [total_vision_seq_len, 1]
-                input_attn_mask[vision_mask] = valid_sorter_values
-                pos_mask[:, vision_mask] = valid_sorter_values
-                batch_valid_counts = input_attn_mask.sum(dim=1) # [B]
-                max_seq_len = batch_valid_counts.max().item()
-                input_ids = reorganize_tensor(input_ids, (B, max_seq_len), pad_token_id, batch_valid_counts, input_attn_mask)
-                attention_mask = reorganize_tensor(attention_mask, (B, max_seq_len), 0, batch_valid_counts, input_attn_mask)
-                position_ids = reorganize_tensor(position_ids, (3, B, max_seq_len), 0, batch_valid_counts, pos_mask)
+                    seq_arange = torch.arange(seq_len, device=device).unsqueeze(0)
+                    vision_mask = (seq_arange >= s_idx.unsqueeze(1)) & (seq_arange < e_idx.unsqueeze(1))
+                    
+                    sorter_arange = torch.arange(max_vision_len, device=device).unsqueeze(0)    # [1, max_vision_len]
+                    valid_prune_mask = sorter_arange < vision_token_nums.unsqueeze(1)           # [B, max_vision_len]
+                    valid_sorter_values = prune_mask[valid_prune_mask]                          # [total_vision_seq_len, 1]
+                    input_attn_mask[vision_mask] = valid_sorter_values
+                    batch_valid_counts = input_attn_mask.sum(dim=1) # [B]
+                    max_seq_len = batch_valid_counts.max().item()
+                    input_ids = reorganize_tensor(input_ids, (B, max_seq_len), pad_token_id, batch_valid_counts, input_attn_mask)
+                    attention_mask = reorganize_tensor(attention_mask, (B, max_seq_len), 0, batch_valid_counts, input_attn_mask)
 
-            elif soft_prune_mask is not None:
-                seq_arange = torch.arange(seq_len, device=device).unsqueeze(0)
-                vision_mask = (seq_arange >= s_idx.unsqueeze(1)) & (seq_arange < e_idx.unsqueeze(1))
-
-                max_vision_len = soft_prune_mask.shape[1]
-                sorter_arange = torch.arange(max_vision_len, device=device).unsqueeze(0)  
-                valid_hard_prune_mask = sorter_arange < vision_token_nums.unsqueeze(1)  # (B, vision_token_seq)
-                valid_sorter_values = soft_prune_mask[valid_hard_prune_mask].squeeze(-1) # (total_vision_seq_len, 1)
-                llm_prune_mask = torch.ones(attention_mask.shape, dtype=soft_prune_mask.dtype, device=attention_mask.device)
-
-                llm_prune_mask[vision_mask] = valid_sorter_values
-                aux_outputs.update({"llm_prune_mask": llm_prune_mask})
-            
-            elif transform_matrices is not None:
-                new_pos_ids_list = []
-                seq_len = position_ids.shape[-1]
-                for i, trans_matrix in enumerate(transform_matrices):
-                    full_trans_matrix = expand_vis_transform_to_full(trans_matrix, seq_len, s_idx[i], e_idx[i]) # [S_new, S]
-                    new_position_ids = torch.matmul(full_trans_matrix, position_ids[:, i, :].to(full_trans_matrix.dtype).transpose(0, 1)).transpose(0, 1) # [3, S_new]
-                    new_pos_ids_list.append(new_position_ids)
-                position_ids = pad_sequence(new_pos_ids_list, batch_first=True).transpose(0, 1) # [3, B, S_new]
-                
-                filtered_lengths = aux_outputs["filtered_lengths"]  # [B]
-                max_vision_len = max(vision_token_nums).item()
-
-                input_attn_mask = torch.ones(
-                    input_ids.shape,
-                    device=input_ids.device,
-                    dtype=torch.bool,
-                ) # [B, S]
-                prune_mask = (
-                    torch.arange(max_vision_len, device=filtered_lengths.device)
-                    .unsqueeze(0)                                  # [1, max_vision_len]
-                    < filtered_lengths.unsqueeze(1)                # [B, 1]
-                ).to(device)                                   # 或者 .to(torch.bool)
-
-                seq_arange = torch.arange(seq_len, device=device).unsqueeze(0)
-                vision_mask = (seq_arange >= s_idx.unsqueeze(1)) & (seq_arange < e_idx.unsqueeze(1))
-                
-                sorter_arange = torch.arange(max_vision_len, device=device).unsqueeze(0)    # [1, max_vision_len]
-                valid_prune_mask = sorter_arange < vision_token_nums.unsqueeze(1)           # [B, max_vision_len]
-                valid_sorter_values = prune_mask[valid_prune_mask]                          # [total_vision_seq_len, 1]
-                input_attn_mask[vision_mask] = valid_sorter_values
-                batch_valid_counts = input_attn_mask.sum(dim=1) # [B]
-                max_seq_len = batch_valid_counts.max().item()
-                input_ids = reorganize_tensor(input_ids, (B, max_seq_len), pad_token_id, batch_valid_counts, input_attn_mask)
-                attention_mask = reorganize_tensor(attention_mask, (B, max_seq_len), 0, batch_valid_counts, input_attn_mask)
-
-                assert input_ids.shape[-1] == position_ids.shape[-1], "After transformation, position_ids should align with input_ids"
+                    assert input_ids.shape[-1] == position_ids.shape[-1], "After transformation, position_ids should align with input_ids"
 
             if inputs_embeds is None:
                 if input_ids is None:
@@ -1193,6 +1183,8 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
         else:
             image_embeds = None
         
+        if self.pato_config.evaluate:
+            return aux_outputs
         # Call language model
         outputs = self.model(
             input_ids=None,
@@ -1239,12 +1231,13 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
             return outputs, aux_outputs, loss
     """
         init model backbone -> load pato components -> forward
-    """
+    """     
     def load_pato_components(
             self, 
             pato_state_dict: Dict[str, Any] = None,
             pato_state_dict_path: Dict[str, Path] = None):
         """Load PATO-specific components from a state dict"""
+
         device = self.model.device
         dtype = self.model.dtype
         if pato_state_dict_path is not None:
@@ -1253,10 +1246,6 @@ class PATOQwen2_5_VLForConditionalGeneration(Qwen2_5_VLForConditionalGeneration)
                 map_location=device,
                 weights_only=False,
             )
-            print(type(pato_state_dict))
-            print(pato_state_dict.keys())
-            self.config = pato_state_dict["config"]
-            
         if self.pato_config.g_raw.enable:
             g_raw_class = get_graw_class(self.pato_config.g_raw.mode)
             context = {}

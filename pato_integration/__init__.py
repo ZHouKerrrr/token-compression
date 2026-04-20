@@ -15,8 +15,12 @@ from .pato_model import (
     PATOQwen2_5_VLForConditionalGeneration_ROUTE,
 )
 from .pato import (
-    PATOQwen2_5_VLForConditionalGeneration
+    PATOQwen2_5_VLForConditionalGeneration,
+    PATOQwen2_5_VisionTransformer,
 )
+# from .clip_qwen import (
+#     CLIPQwen2_5_VLForConditionalGeneration
+# )
 from .loss import create_pato_loss
 __all__ = [
     'PATOConfig',
@@ -25,7 +29,8 @@ __all__ = [
     'TokenSortConfig',
     'ProjectorConfig',
     'PATOQwen2_5_VLForConditionalGeneration_ROUTE',
-    'PATOQwen2_5_VLForConditionalGeneration'
+    'PATOQwen2_5_VLForConditionalGeneration',
+    'PATOQwen2_5_VisionTransformer',
     'create_default_pato_config',
     'create_pato_loss',
 ]

@@ -19,7 +19,7 @@ class GRawConfig:
     """Configuration for g_raw module (pixel-level precompression)"""
     
     # General settings
-    enable: bool = True
+    enable: bool = False
     mode: str = 'A'  # Method A: Weighted Downsampling
 
     # Feature dimensions
@@ -34,7 +34,7 @@ class TokenSortConfig:
     """Configuration for Token Sort module"""
     
     # General settings
-    enable: bool = True
+    enable: bool = False
     mode: str = 'dynamic_token_sorter'  
     
     # Qwen2.5-VL language model hidden size
@@ -42,6 +42,21 @@ class TokenSortConfig:
     
     # LightAttention args
     attn_layers: int = 2
+    
+    anchor_idxs: list = None
+    
+    # tau of gumbel softmax
+    tau_start: float = 1.0
+    tau_end: float = 0.5
+    # topk
+    use_topk: bool = True
+    topk_ratio: float = 0.3
+    
+    # merge method
+    merge_config = {
+        'method' : 'patch',
+        'size' : 1,
+    }
     
     # Method hard_token_sorter: Hard token pruned by scores
     # token_threshold: float = 0.5
@@ -66,7 +81,7 @@ class TokenSortConfig:
 class ProjectorConfig:
     """Configuration for Visual Projector"""
     # General settings
-    enable: bool = True
+    enable: bool = False
     # Projector type
     mode: str = 'A'  # A: Simplified Linear, B: Grid Reconstruction
     
@@ -126,12 +141,13 @@ class PATOQwen2_5_VLConfig(Qwen2_5_VLConfig):
         pato_config: Optional[PATOConfig] = None,
         **kwargs
     ):
+        
         # Initialize PATO config
         if pato_config is None:
             self.pato_config = create_default_pato_config(**kwargs)
-        elif isinstance(pato_config, dict):
-            # Convert dict to dataclass
-            self.pato_config = self._dict_to_pato_config(pato_config)
+        # elif isinstance(pato_config, dict):
+        #     # Convert dict to dataclass
+        #     self.pato_config = self._dict_to_pato_config(pato_config)
         else:
             self.pato_config = pato_config
         super().__init__(**kwargs)

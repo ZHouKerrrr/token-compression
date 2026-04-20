@@ -1,0 +1,30 @@
+idx: 0  Query: What is the officer to the right of the woman holding onto?  Answer: bike
+idx: 1  Query: What is the kite in?  Answer: air
+idx: 2  Query: What is that bus in front of?  Answer: tree
+idx: 3  Query: What is the girl opening?  Answer: cabinet
+idx: 4  Query: Which kind of vegetable is to the left of the cheese?  Answer: spinach
+idx: 5  Query: What is the animal in the field?  Answer: cow
+idx: 6  Query: What is on the tree?  Answer: snow
+idx: 7  Query: What is on the stone?  Answer: cross
+idx: 8  Query: What is the man in front of?  Answer: fence
+idx: 9  Query: Who is wearing the hat?  Answer: woman
+idx: 10  Query: Who wears the boot?  Answer: jockey
+idx: 11  Query: Where is the water?  Answer: pavement
+idx: 12  Query: What does the woman wear?  Answer: dress
+idx: 13  Query: Where is the person to the left of the pine tree standing on?  Answer: ground
+idx: 14  Query: What is the device that the woman to the right of the man is looking at?  Answer: cell phone
+idx: 15  Query: Which kind of furniture is not rectangular?  Answer: chair
+idx: 16  Query: The woman is in front of who?  Answer: lady
+idx: 17  Query: Which kind of animal is running?  Answer: zebras
+idx: 18  Query: Where is the animal?  Answer: water
+idx: 19  Query: What kind of food is on the plate?  Answer: salad
+idx: 20  Query: What kind of vehicle is above the gravel?  Answer: train
+idx: 21  Query: What is on the shelf in the bottom of the picture?  Answer: cans
+idx: 22  Query: What kind of vegetable is on top of the spoon that is on top of the table?  Answer: broccoli
+idx: 23  Query: Where is the palm tree?  Answer: mountain side
+idx: 24  Query: Who is watching the game?  Answer: crowd
+idx: 25  Query: What kind of animal is sitting on the table?  Answer: cat
+idx: 26  Query: What animal wears the collar?  Answer: cat
+idx: 27  Query: What is the water bottle on?  Answer: table
+idx: 28  Query: What does the lady hold?  Answer: racket
+idx: 29  Query: What animal is the man on?  Answer: horse

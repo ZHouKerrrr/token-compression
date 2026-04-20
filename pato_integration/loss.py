@@ -13,9 +13,9 @@ import torch
 class RateLoss(nn.Module):
     """Loss to encourage the token selection to meet a target budget"""
     
-    def __init__(self, ):
+    def __init__(self, keep_rate: float = 0.1):
         super().__init__()
-        
+        self.keep_rate = keep_rate
     
     def forward(
         self, 
@@ -31,7 +31,7 @@ class RateLoss(nn.Module):
             Rate loss
         """
         loss = keep_ratio.mean(dim=0)
-        
+        loss = (loss - self.keep_rate).abs()
         return loss * lambda_rate
 
 class KLLoss(nn.Module):
@@ -87,7 +87,8 @@ class MSELoss(nn.Module):
         student_feat, 
         teacher_feat, 
         valid_mask=None, 
-        lambda_mse=1.0
+        lambda_mse=1.0,
+        temperature=2.0,
     ):
         if valid_mask is not None:
             student_feat = student_feat[valid_mask]
@@ -98,7 +99,7 @@ class MSELoss(nn.Module):
         student_feat = F.normalize(student_feat.float(), p=2, dim=-1)
         teacher_feat = F.normalize(teacher_feat.float(), p=2, dim=-1)
 
-        return lambda_mse * self.loss_fct(student_feat, teacher_feat)
+        return lambda_mse * self.loss_fct(student_feat, teacher_feat) * (temperature ** 2)
 
 class TokensSamplerRegularizationLoss(nn.Module):
     def __init__(self):
@@ -160,7 +161,28 @@ class TokensSamplerRegularizationLoss(nn.Module):
         loss_tv = torch.stack(tv_losses).mean() * lambda_tv
         return (loss_compact + loss_tv)
 
+class CLIPLoss(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
+    def forward(
+        self,
+        lambda_clip,
+        clip_outputs
+    ):
+        """
+        CLIPOutput(
+            loss=loss,
+            logits_per_image=logits_per_image,
+            logits_per_text=logits_per_text,
+            text_embeds=text_embeds,
+            image_embeds=image_embeds,
+            text_model_output=text_outputs,
+            vision_model_output=vision_outputs,
+        )
+        """
+        return lambda_clip * clip_outputs.logits_per_image
+        
 class PATOLoss(nn.Module):
     """Complete PATO loss computation
     
@@ -205,8 +227,8 @@ class PATOLoss(nn.Module):
         lambda_compact = lambda_loss.get("lambda_compact", None)
         lambda_tv = lambda_loss.get("lambda_tv", None)
         lambda_rate = lambda_loss.get("lambda_rate", None)
-        temperature_kd_logits = lambda_loss.get("temperature_kd_logits", 2.0)
-        temperature_kd_feature = lambda_loss.get("temperature_kd_feature", 2.0)
+        temperature_kd = lambda_loss.get("temperature_kd", 2.0)
+        temperature_mse = lambda_loss.get("temperature_mse", 2.0)
         
         losses = {}
         aux_outputs = students_outputs.get("aux_outputs", None)
@@ -231,8 +253,8 @@ class PATOLoss(nn.Module):
                     student_logits=shift_student_logits,
                     teacher_logits=shift_teacher_logits,
                     valid_mask=valid,
-                    temperature=temperature_kd_logits,
                     lambda_kd=lambda_kd_logits,
+                    temperature=temperature_kd,
                 )
                 losses['kd_logits_loss'] = kd_logits_loss
             
@@ -246,6 +268,7 @@ class PATOLoss(nn.Module):
                     teacher_feat=shift_teacher_feature, 
                     valid_mask=valid,
                     lambda_mse=lambda_mse_feature,
+                    temperature=temperature_mse,
                 )
                 losses['kd_feature_loss'] = kd_feature_loss
 
