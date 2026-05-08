@@ -219,9 +219,9 @@ examples/
 logs/
 tests/
 result/
-viscot_benchmark/
-viscot_dataset/
-viscot_eval/
+# viscot_benchmark/
+# viscot_dataset/
+# viscot_eval/
 wandb/
 test.ipynb
 TODO.md
