@@ -218,6 +218,7 @@ doc/
 examples/
 logs/
 tests/
+result/
 viscot_benchmark/
 viscot_dataset/
 viscot_eval/
