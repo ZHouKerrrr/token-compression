@@ -228,22 +228,8 @@ class PATOQwen2_5_VisionTransformer(Qwen2_5_VisionTransformerPretrainedModel):
             image_embeds: [B, M, hidden_dim] projected visual tokens
             aux_outputs: Auxiliary outputs (if training)
         """
-        # ============================================================
-        # Step 1: Patch Embedding (original Qwen2.5-VL)
-        # ============================================================
         hidden_states = self.patch_embed(hidden_states)
-        
-        # Get rotary position embeddings
         rotary_pos_emb = self.rot_pos_emb(grid_thw)
-        
-        # ============================================================
-        # Step 2: Vision Transformer Blocks (original Qwen2.5-VL)
-        # ============================================================
-        cu_seqlens = torch.repeat_interleave(grid_thw[:, 1] * grid_thw[:, 2], grid_thw[:, 0]).cumsum(
-            dim=0, dtype=torch.int32
-        )
-        cu_seqlens = F.pad(cu_seqlens, (1, 0), value=0)
-        
         window_index, cu_window_seqlens = self.get_window_index(grid_thw)
         cu_window_seqlens = torch.tensor(
             cu_window_seqlens,
@@ -271,7 +257,8 @@ class PATOQwen2_5_VisionTransformer(Qwen2_5_VisionTransformerPretrainedModel):
             dtype=grid_thw.dtype if torch.jit.is_tracing() else torch.int32,
         )
         cu_seqlens = F.pad(cu_seqlens, (1, 0), value=0)
-        # Run through transformer blocks
+        reverse_indices = torch.argsort(window_index)
+
         for layer_num, blk in enumerate(self.blocks):
             if layer_num in self.fullatt_block_indexes:
                 cu_seqlens_now = cu_seqlens
@@ -283,17 +270,18 @@ class PATOQwen2_5_VisionTransformer(Qwen2_5_VisionTransformerPretrainedModel):
                 )
             else:
                 hidden_states = blk(hidden_states, cu_seqlens=cu_seqlens_now, position_embeddings=position_embeddings)
-        
-        # Output shape: [total_patches, hidden_size]
-        # hidden_states = self.merger(hidden_states)
+
+        if False:
+            assert B == 1, "External_hidden_states' batch size should be 1"
+            external_hidden_states = hidden_states.clone()
+            external_hidden_states = external_hidden_states.reshape(seq_len // self.spatial_merge_unit, self.spatial_merge_unit, -1)
+            external_hidden_states = external_hidden_states[reverse_indices, :, :]
+            external_hidden_states = external_hidden_states.reshape(seq_len, -1)
+            external_hidden_states = external_hidden_states
 
         hidden_states = self.merger(hidden_states)
-        reverse_indices = torch.argsort(window_index)
         hidden_states = hidden_states[reverse_indices, :]
-        # ============================================================
-        # Step 3: Token Sort (NEW - PATO)
-        # ============================================================
-    
+
         aux_outputs = {}
         if self.token_sorter is not None and self.pato_config.token_sort.enable:
             # Calculate tokens per image after merger (Downsampling usually /4)
@@ -309,7 +297,7 @@ class PATOQwen2_5_VisionTransformer(Qwen2_5_VisionTransformerPretrainedModel):
                 sequences=sequence,
                 batch_first=True,
             ).to(device) # [B, max_len, dim]
-            lengths = torch.as_tensor([v.size(0) for v in hidden_states], device=device).to(hidden_states.device)
+            lengths = torch.as_tensor([v.size(0) for v in sequence], device=device).to(hidden_states.device)
             tokens_grid_thw = grid_thw.clone()
             tokens_grid_thw[:, 1:] = tokens_grid_thw[:, 1:] // self.spatial_merge_size
             sorted_tokens, sort_aux = self.token_sorter(
@@ -323,15 +311,10 @@ class PATOQwen2_5_VisionTransformer(Qwen2_5_VisionTransformerPretrainedModel):
             # If sort is disabled, ensure variable name consistency
             return hidden_states
         
-        
-        # ============================================================
-        # Step 4: Simplified Projector (NEW - PATO)
-        # ============================================================
-
         if self.pato_config.projector.enable:
             # Use simplified projector
             sorted_tokens = self.projector(sorted_tokens)  # [B, M, hidden_dim]
-        # if token sorter has reorginize the tokens
+
         if sorted_tokens is not None:
             return sorted_tokens, aux_outputs
         else:

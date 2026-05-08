@@ -5,7 +5,7 @@ torch_dtype: bfloat16
 teacher_config: 
   enable: True
   teacher_model_name_or_path: Qwen/Qwen2.5-VL-7B-Instruct
-pato_args:
+model_args:
   projector:
     enable: false
   g_raw:
@@ -35,13 +35,13 @@ pato_args:
 # loss arguments
 
 lambda_loss:
-  lambda_kd_logits: 1.5
-  lambda_mse_feature: 0.01
-  lambda_distortion: 0.001
+  lambda_kd_logits: 1.7
+  lambda_mse_feature: 0.1
+  lambda_distortion: 0.0001
   # lambda_compact: 1e-3
   # lambda_tv: 1e-3
-  lambda_rate: 0.75               # (1e-3)
-  lambda_rate_start: 0.25
+  lambda_rate: 0.8               # (1e-3)
+  lambda_rate_start: 0.05
   temperature_kd: 1.0
   temperature_mse: 2.0
 

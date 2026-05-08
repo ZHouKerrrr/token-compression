@@ -1,0 +1,10 @@
+idx: 0  Query: What is the officer to the right of the woman holding onto?  Answer: bike
+idx: 1  Query: What is the kite in?  Answer: air
+idx: 2  Query: What is that bus in front of?  Answer: tree
+idx: 3  Query: What is the girl opening?  Answer: cabinet
+idx: 4  Query: Which kind of vegetable is to the left of the cheese?  Answer: spinach
+idx: 5  Query: What is the animal in the field?  Answer: cow
+idx: 6  Query: What is on the tree?  Answer: snow
+idx: 7  Query: What is on the stone?  Answer: cross
+idx: 8  Query: What is the man in front of?  Answer: fence
+idx: 9  Query: Who is wearing the hat?  Answer: woman

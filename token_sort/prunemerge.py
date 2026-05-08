@@ -199,61 +199,7 @@ class PruneMergeTokenSorter(BaseTokenSorter):
             ret = y_soft
             
         return ret
-
-    def _tokens_merge(
-        self,
-        scores: torch.Tensor,         # [B, N]
-        mask: torch.Tensor,           # [B, N]
-        hidden_states: torch.Tensor,  # [B, N, D]
-        grid_thw: torch.Tensor,       # [B, 3]
-        lengths: torch.Tensor,        # [B]
-    ):
-        B, N = scores.shape
-        device = hidden_states.device
-        dtype = hidden_states.dtype
-        
-        high_t = getattr(self.merge_config, 'high_t', 0.5)
-        low_t = getattr(self.merge_config, 'low_t', 0.3)
-        
-        probs = torch.where(scores >= high_t, torch.tensor(1),
-            torch.where(scores <= low_t, torch.tensor(0), scores))
-        
-        method = self.merge_config['method']
-        if method == 'patch':
-            
-            size = self.merge_config['size']
-            
-            for b in range(B):
-                
-                t, h, w = grid_thw[b]
-                length = lengths[b]
-
-                for i in range(length):
-                    if not mask[b, i]:
-                        continue
-                    neighbor_idxs = []
-                    
-                    t_i = i // (h * w)
-                    r = i % (h * w)
-                    h_i = r // w
-                    w_i = r % w
-                    
-                    h_grid = torch.arange(2 * size + 1, device=device) - size + h_i
-                    w_grid = torch.arange(2 * size + 1, device=device) - size + w_i
-                    
-                    h_grid = h_grid[(h_grid >= 0) & (h_grid < h)]
-                    w_grid = w_grid[(w_grid >= 0) & (w_grid < w)]
-                    
-                    hh, ww = torch.meshgrid(h_grid, w_grid, indexing="ij")   # [Kh, Kw]
-                    hh = hh.reshape(-1)
-                    ww = ww.reshape(-1)
-                    
-                    neighbor_idxs = t_i * (h * w) + hh * w + ww
-                    assert (neighbor_idxs >= 0).all(), neighbor_idxs
-                    assert (neighbor_idxs < length).all(), (neighbor_idxs, length)
-                    hidden_states[b, i] = hidden_states[b, neighbor_idxs].mean(dim=0)
-                    
-        return hidden_states                
+       
 
     def forward(
         self,
@@ -332,37 +278,37 @@ class PruneMergeTokenSorter(BaseTokenSorter):
                 return None, aux_outputs
             else:
                 # use to topk
-                if self.use_topk:
-                    k = max(1, int(N * self.topk_ratio))
+                if False:
+                    k = max(1, int(_N * self.topk_ratio))
                     scores = keep_prob[:, :, 0]
                     _, tokp_idxs = torch.topk(scores, k)
                     hard_mask = torch.zeros_like(scores, dtype=torch.bool)
                     hard_mask.scatter_(1, tokp_idxs, True)
                 else:
-                    hard_mask = binary_scores.argmax(dim=-1) == 0
-                
+                    # hard_mask = binary_scores.argmax(dim=-1) == 0
+                    hard_mask = keep_prob[:, :, 0] > 0.4
                 anchor_mask = anchor_mask.bool()
                 valid_hard_mask = hard_mask[anchor_valid_mask] # [flatten]
                 anchor_mask[non_anchor_mask] = valid_hard_mask # [anchor mask]
                 keep_ratio = anchor_mask.float().sum(dim=1) / lengths.clamp(min=1) # ratio
                 
                 # use merge
-                if self.merge_config:
-                    scores = torch.zeros_like(
-                        anchor_mask,
-                        device=device,
-                        dtype=dtype,
-                    )
-                    scores[non_anchor_mask] = keep_prob[:, :, 0]
-                    scores[:, self.anchor_idxs] = 1.0
+                # if self.merge_config:
+                #     scores = torch.zeros_like(
+                #         anchor_mask,
+                #         device=device,
+                #         dtype=dtype,
+                #     )
+                #     scores[non_anchor_mask] = keep_prob[:, :, 0]
+                #     scores[:, self.anchor_idxs] = 1.0
 
-                    hidden_states = self._tokens_merge(
-                        scores=scores, 
-                        mask=anchor_mask, 
-                        hidden_states=hidden_states, 
-                        grid_thw=grid_thw,
-                        lengths=lengths,
-                    )
+                #     hidden_states = self._tokens_merge(
+                #         scores=scores, 
+                #         mask=anchor_mask, 
+                #         hidden_states=hidden_states, 
+                #         grid_thw=grid_thw,
+                #         lengths=lengths,
+                #     )
                     
                 
                 filtered_hidden_list = [

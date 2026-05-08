@@ -54,7 +54,7 @@ from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
 )
 from g_raw import WeightedDownsample
 from token_sort import PruneMergeTokenSorter
-from pato_integration.loss import create_pato_loss
+from pato_integration.pato_loss import create_pato_loss
 
 from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config
 from trl.models import unwrap_model_for_generation
@@ -110,7 +110,7 @@ class PATOScriptArgurment:
         default=224,
         metadata={"help": "The min legal size of an image.It should be equal to g_raw.target_size."},
     )
-    pato_state_dict_path: Optional[str] = field(
+    state_dict_path: Optional[str] = field(
         default=None,
         metadata={"help": "Resume from checkpoint's path"},
     )
@@ -141,7 +141,7 @@ class PATOModelConfig:
             "choices": ["auto", "bfloat16", "float16", "float32"],
         },
     )
-    pato_args : Optional[dict] = field(
+    model_args : Optional[dict] = field(
         default=None,
         metadata={"help": "arguments of pato model."}
     )
@@ -347,7 +347,7 @@ def main():
 
     model_path = model_args.model_name_or_path
     base_model_config = Qwen2_5_VLConfig.from_pretrained(model_path)
-    pato_config: PATOConfig = create_default_pato_config(**model_args.pato_args)
+    pato_config: PATOConfig = create_default_pato_config(**model_args.model_args)
     config = PATOQwen2_5_VLConfig(
         pato_config,
         **base_model_config.to_dict()

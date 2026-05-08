@@ -55,7 +55,7 @@ from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import (
 )
 from g_raw import WeightedDownsample
 from token_sort import PruneMergeTokenSorter
-from pato_integration.loss import create_pato_loss
+from pato_integration.pato_loss import create_pato_loss
 
 from trl import ModelConfig, ScriptArguments, TrlParser, get_peft_config
 from trl.models import unwrap_model_for_generation

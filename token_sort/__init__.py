@@ -29,8 +29,12 @@ except ImportError:
 from .softsort import *
 from .hardsort import *
 from .dynamic import *
-from .dynamic_v2 import *
+from .testsort import *
 from .prunemerge import *
+
+from .compressor import Compressor
+from .nestdropout import NestDropout
+
 try:
     from .gatingsort import RandomGatingTokenSorter
 except ImportError:
@@ -54,7 +58,7 @@ __all__ = [
     "DifferentiableSortingTokenSorter",
     "HardTokenSorter",
     "DynamicTokenSorter",
-    "DynamicTokenSorterV2",
+    "TestTokenSorter",
 ]
 
 if RandomGatingTokenSorter is not None:

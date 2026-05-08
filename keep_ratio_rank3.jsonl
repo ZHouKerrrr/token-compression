@@ -1,0 +1,125 @@
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [307], "batch_size": 1, "answers": ["target"], "keep_ratio_steps": [0.0025482177734375, 0.0025482177734375]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [3], "batch_size": 1, "answers": ["salad"], "keep_ratio_steps": [0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [127], "batch_size": 1, "answers": ["black and white"], "keep_ratio_steps": [0.0, 0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [283], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [287], "batch_size": 1, "answers": ["E"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [51], "batch_size": 1, "answers": ["5"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [247], "batch_size": 1, "answers": ["no"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [147], "batch_size": 1, "answers": ["no"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [171], "batch_size": 1, "answers": ["6"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [75], "batch_size": 1, "answers": ["monkeys"], "keep_ratio_steps": [0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [491], "batch_size": 1, "answers": ["white"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [323], "batch_size": 1, "answers": ["red"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [335], "batch_size": 1, "answers": ["Mavin"], "keep_ratio_steps": [0.005096435546875, 0.005096435546875, 0.005096435546875]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [223], "batch_size": 1, "answers": ["index"], "keep_ratio_steps": [0.003082275390625, 0.003082275390625]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [303], "batch_size": 1, "answers": ["No"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [55], "batch_size": 1, "answers": ["acting"], "keep_ratio_steps": [0.004119873046875, 0.004119873046875]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [467], "batch_size": 1, "answers": ["procter"], "keep_ratio_steps": [0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [271], "batch_size": 1, "answers": ["wood"], "keep_ratio_steps": [0.0025482177734375, 0.0025482177734375]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [87], "batch_size": 1, "answers": ["straight"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [455], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.00750732421875, 0.00750732421875]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [347], "batch_size": 1, "answers": ["happy"], "keep_ratio_steps": [0.0029144287109375, 0.0029144287109375]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [183], "batch_size": 1, "answers": ["none"], "keep_ratio_steps": [0.005828857421875, 0.005828857421875]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [227], "batch_size": 1, "answers": ["450"], "keep_ratio_steps": [0.0, 0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [63], "batch_size": 1, "answers": ["truck"], "keep_ratio_steps": [0.007232666015625, 0.007232666015625]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [451], "batch_size": 1, "answers": ["right"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [103], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.005096435546875, 0.005096435546875]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [487], "batch_size": 1, "answers": ["office depot"], "keep_ratio_steps": [0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [471], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [235], "batch_size": 1, "answers": ["no"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [267], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [59], "batch_size": 1, "answers": ["cut"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [39], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [251], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0025482177734375, 0.0025482177734375]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [139], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.002716064453125, 0.002716064453125]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [423], "batch_size": 1, "answers": ["no"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [259], "batch_size": 1, "answers": ["laptop"], "keep_ratio_steps": [0.0025482177734375, 0.0025482177734375, 0.0025482177734375]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [31], "batch_size": 1, "answers": ["none"], "keep_ratio_steps": [0.0025482177734375, 0.0025482177734375]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [415], "batch_size": 1, "answers": ["white"], "keep_ratio_steps": [0.0025482177734375, 0.0025482177734375]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [371], "batch_size": 1, "answers": ["skin brightening"], "keep_ratio_steps": [0.0, 0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [295], "batch_size": 1, "answers": ["words"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [207], "batch_size": 1, "answers": ["hat"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [435], "batch_size": 1, "answers": ["nationals park"], "keep_ratio_steps": [0.002410888671875, 0.002410888671875, 0.002410888671875, 0.002410888671875]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [447], "batch_size": 1, "answers": ["landscape"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [159], "batch_size": 1, "answers": ["birds"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [319], "batch_size": 1, "answers": ["worm"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [47], "batch_size": 1, "answers": ["COLD"], "keep_ratio_steps": [0.002166748046875, 0.002166748046875, 0.002166748046875]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [419], "batch_size": 1, "answers": ["ferry"], "keep_ratio_steps": [0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [11], "batch_size": 1, "answers": ["blackberry"], "keep_ratio_steps": [0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [19], "batch_size": 1, "answers": ["ball"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [191], "batch_size": 1, "answers": ["hinges"], "keep_ratio_steps": [0.0029144287109375, 0.0029144287109375, 0.0029144287109375]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [411], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [279], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.007232666015625, 0.007232666015625]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [107], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [375], "batch_size": 1, "answers": ["0"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [151], "batch_size": 1, "answers": ["1"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [131], "batch_size": 1, "answers": ["no"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [215], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [231], "batch_size": 1, "answers": ["no"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [443], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [71], "batch_size": 1, "answers": ["none"], "keep_ratio_steps": [0.0029144287109375, 0.0029144287109375]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [187], "batch_size": 1, "answers": ["green"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [35], "batch_size": 1, "answers": ["left"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [475], "batch_size": 1, "answers": ["news"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [79], "batch_size": 1, "answers": ["lanyard"], "keep_ratio_steps": [0.0, 0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [135], "batch_size": 1, "answers": ["sky"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [255], "batch_size": 1, "answers": ["nothing"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [175], "batch_size": 1, "answers": ["MELACHI"], "keep_ratio_steps": [0.0, 0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [115], "batch_size": 1, "answers": ["Fast Company"], "keep_ratio_steps": [0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [203], "batch_size": 1, "answers": ["english"], "keep_ratio_steps": [0.0029144287109375, 0.0029144287109375]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [243], "batch_size": 1, "answers": ["big brother"], "keep_ratio_steps": [0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [299], "batch_size": 1, "answers": ["2011"], "keep_ratio_steps": [0.0, 0.0, 0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [199], "batch_size": 1, "answers": ["for runners"], "keep_ratio_steps": [0.0020599365234375, 0.0020599365234375, 0.0020599365234375]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [211], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.017822265625, 0.017822265625]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [459], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [179], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [15], "batch_size": 1, "answers": ["2"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [355], "batch_size": 1, "answers": ["281"], "keep_ratio_steps": [0.003570556640625, 0.003570556640625, 0.003570556640625, 0.003570556640625]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [99], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [167], "batch_size": 1, "answers": ["street"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [407], "batch_size": 1, "answers": ["umbrella"], "keep_ratio_steps": [0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [291], "batch_size": 1, "answers": ["train"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [27], "batch_size": 1, "answers": ["Your own drugs"], "keep_ratio_steps": [0.0, 0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [339], "batch_size": 1, "answers": ["green"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [67], "batch_size": 1, "answers": ["no milk crate"], "keep_ratio_steps": [0.0, 0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [219], "batch_size": 1, "answers": ["unknown"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [431], "batch_size": 1, "answers": ["plastic"], "keep_ratio_steps": [0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [379], "batch_size": 1, "answers": ["cutting board"], "keep_ratio_steps": [0.0, 0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [311], "batch_size": 1, "answers": ["cruise ship"], "keep_ratio_steps": [0.01165771484375, 0.01165771484375, 0.01165771484375, 0.01165771484375]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [427], "batch_size": 1, "answers": ["Rabies"], "keep_ratio_steps": [0.003753662109375, 0.003753662109375, 0.003753662109375]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [111], "batch_size": 1, "answers": ["afternoon"], "keep_ratio_steps": [0.0029144287109375, 0.0029144287109375, 0.0029144287109375]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [367], "batch_size": 1, "answers": ["locker room"], "keep_ratio_steps": [0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [463], "batch_size": 1, "answers": ["no one"], "keep_ratio_steps": [0.01019287109375, 0.01019287109375, 0.01019287109375]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [119], "batch_size": 1, "answers": ["birthday"], "keep_ratio_steps": [0.0025482177734375, 0.0025482177734375]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [91], "batch_size": 1, "answers": ["no"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [239], "batch_size": 1, "answers": ["2"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [123], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [331], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.002716064453125, 0.002716064453125]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [7], "batch_size": 1, "answers": ["no"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [387], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [363], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [483], "batch_size": 1, "answers": ["kite"], "keep_ratio_steps": [0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [383], "batch_size": 1, "answers": ["starbucks"], "keep_ratio_steps": [0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [479], "batch_size": 1, "answers": ["orange"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [495], "batch_size": 1, "answers": ["white"], "keep_ratio_steps": [0.00750732421875, 0.00750732421875]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [43], "batch_size": 1, "answers": ["brown"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [391], "batch_size": 1, "answers": ["blue"], "keep_ratio_steps": [0.003753662109375, 0.003753662109375]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [403], "batch_size": 1, "answers": ["yellow"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [439], "batch_size": 1, "answers": ["black and white"], "keep_ratio_steps": [0.0, 0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [359], "batch_size": 1, "answers": ["red, green, yellow, blue"], "keep_ratio_steps": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [155], "batch_size": 1, "answers": ["2200"], "keep_ratio_steps": [0.0, 0.0, 0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [351], "batch_size": 1, "answers": ["kitchen"], "keep_ratio_steps": [0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [143], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [275], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [343], "batch_size": 1, "answers": ["no"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [83], "batch_size": 1, "answers": ["5"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [395], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [23], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [163], "batch_size": 1, "answers": ["no"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [315], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [95], "batch_size": 1, "answers": ["6230"], "keep_ratio_steps": [0.0, 0.0, 0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [499], "batch_size": 1, "answers": ["snow"], "keep_ratio_steps": [0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [399], "batch_size": 1, "answers": ["hair salon"], "keep_ratio_steps": [0.0, 0.0, 0.0]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [195], "batch_size": 1, "answers": ["1"], "keep_ratio_steps": [0.003326416015625, 0.003326416015625]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [327], "batch_size": 1, "answers": ["yes"], "keep_ratio_steps": [0.0025482177734375, 0.0025482177734375]}
+{"task": "vqav2_val_lite", "split": "lite", "doc_id": [263], "batch_size": 1, "answers": ["no"], "keep_ratio_steps": [0.0, 0.0]}

@@ -16,7 +16,7 @@ port=${PORT:-29500}
 attn_implementation=${ATTN_IMPL:-"flash_attention_2"}
 
 config="train_configs/qwen2_5_7b_pato/qwen2_5_7b_pato.yaml"
-pato_state_dict_path="output/qwen2_5_7b_pato/pato_components_0420_729%.pt"
+pato_state_dict_path="output/qwen2_5_7b_pato/pato_components.pt"
 
 eval_list=( \
 "vqav2_val_lite" \

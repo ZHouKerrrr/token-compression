@@ -18,7 +18,13 @@ import datasets
 from transformers.models.qwen2_5_vl import (
     Qwen2_5_VLProcessor,
 )
-from qwen_vl_utils import process_vision_info
+from qwen_vl_utils.vision_process import (
+    process_vision_info, 
+    to_rgb,
+    smart_resize,
+    IMAGE_MIN_TOKEN_NUM,
+    IMAGE_MAX_TOKEN_NUM,
+)
 from training.utils import (                            
     print_rank0,
     norm_bboxes,
@@ -34,7 +40,7 @@ IMG_PATH_KEY = "img_path"
 ANSWER_KEY = "answer"
 NORMED_BBOXES_KEY = "normed_bboxes"
 SCORE_FUNCS_KEY = "score_funcs"
-
+EXTERNAL_IMG_INPUTS = "external_img_inputs"
 
 REMAIN_KEYS = [
     QUERY_KEY,
@@ -103,7 +109,6 @@ def cot_train_fullmask_dataset_mapper(one_data, **kwargs):
         NORMED_BBOXES_KEY: normed_bboxes,
     }    
     
-    
 @register_mappers()
 def norm_bboxes_dataset_mapper(one_data, **kwargs):
     bboxes = one_data.pop(NORMED_BBOXES_KEY)
@@ -118,7 +123,6 @@ def norm_bboxes_dataset_mapper(one_data, **kwargs):
     normed_bboxes = norm_bboxes(bboxes, height, width, bbox_type=kwargs['bbox_type'])
     one_data[NORMED_BBOXES_KEY] = normed_bboxes
     return one_data
-
     
 @register_filters()
 def min_image_filter(one_data, **kwargs):
@@ -439,7 +443,6 @@ class PATODataset(torch.utils.data.Dataset):
         all_processed_datasets = cls._all_processed_datasets(config, processor, script_args)
         return all_processed_datasets
 
-
 class PATOCollator:
     def __init__(self, processor, is_sft):
         self.processor = processor
@@ -497,11 +500,8 @@ class PATOCollator:
             messages, tokenize=False, add_generation_prompt=(not self.is_sft)
         )
         
-        # TODO: 需要修改text格式，插入图片的缩略图以及对应的prompt
         image_inputs, video_inputs = process_vision_info(messages)
 
-        image_inputs[0] = ImageOps.mirror(image_inputs[0])    
-        image_inputs[0] = ImageOps.flip(image_inputs[0])
         inputs = self.processor(
             text=text,
             # normed_bboxes=normed_bboxes,
@@ -518,6 +518,99 @@ class PATOCollator:
         inputs[QUERY_KEY] = querys
         inputs[ANSWER_KEY] = answers
         inputs[IMG_PATH_KEY] = img_path
+        return inputs
+    
+class PATOMergeCollator:
+    def __init__(self, processor, is_sft, is_etn):
+        self.processor = processor
+        self.is_sft = is_sft
+        self.is_etn = is_etn
+        self.im_start_id = self.processor.tokenizer.encode("<|im_start|>")[0]
+        
+    def _prepare_labels_from_input_ids(self, input_ids):
+        """
+        Message sample:
+            '<|im_start|>system\n
+            You are a helpful assistant.<|im_end|>\n
+            <|im_start|>user\n
+            <|vision_start|><|image_pad|><|vision_end|>What is shown in this image?<|im_end|>
+            <|im_start|>assistant\n
+            This is a stop sign in Australia.<|im_end|>\n'
+        TODO:
+            search the last  token, 
+            and mask all tokens before last  + 3 (including 1, role token, and first vision token)
+        """
+
+        B, L = input_ids.shape
+        labels = input_ids.clone()
+        mask = input_ids == self.im_start_id
+        flipped_mask = mask.flip(dims=(1,))  # Reverse the mask to find the last <|im_start|> token
+        first_idx_in_flipped = torch.argmax(flipped_mask.int(), dim=1)
+        last_pos = (L - 1) - first_idx_in_flipped
+        mask_until_idx = last_pos + 3
+        mask_until_idx = torch.clamp(mask_until_idx, max=L)
+        
+        arange_l = torch.arange(L, device=input_ids.device).expand(B, -1)
+        modification_mask = arange_l < mask_until_idx.unsqueeze(1)
+        
+        labels[modification_mask] = -100   # ignore index of CrossEntropyLoss
+        return labels
+        
+    def _prepare_external_image(self, processor, img_path, patch_factor=28):
+        image_obj = Image.open(img_path)
+        image = to_rgb(image_obj)
+        width, height = image.size
+        min_pixels = IMAGE_MIN_TOKEN_NUM * patch_factor ** 2
+        max_pixels = IMAGE_MAX_TOKEN_NUM * patch_factor ** 2
+        resized_height, resized_width = smart_resize(
+            height,
+            width,
+            factor=patch_factor,
+            min_pixels=min_pixels,
+            max_pixels=max_pixels,
+        )
+        image = image.resize((resized_width, resized_height))
+        pass
+    
+    def __call__(self, features):
+        messages = []
+        answers = []
+        querys = []
+        for feature in features:
+            query = feature[QUERY_KEY]
+            answer = feature[ANSWER_KEY]
+            img_path = feature[IMG_PATH_KEY]
+            if self.is_sft:
+                messages.append([{"role": "user", "content": [{"type": "image", "image": img_path}, {"type": "text", "text": query}]}, {"role": "assistant", "content": [{"type": "text", "text": answer}]}])
+            else:
+                messages.append([{"role": "user", "content": [{"type": "image", "image": img_path}, {"type": "text", "text": query}]}])
+            querys.append(query)
+            answers.append(answer)
+        
+        text = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=(not self.is_sft)
+        )
+        
+        image_inputs, video_inputs = process_vision_info(messages)
+        inputs = self.processor(
+            text=text,
+            # normed_bboxes=normed_bboxes,
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
+        )
+        
+        if self.is_sft:
+            labels = self._prepare_labels_from_input_ids(inputs.input_ids)
+            inputs["labels"] = labels
+        
+        inputs[QUERY_KEY] = querys
+        inputs[ANSWER_KEY] = answers
+        inputs[IMG_PATH_KEY] = img_path
+        inputs[EXTERNAL_IMG_INPUTS] = self._prepare_external_image(self.processor, img_path)
+        
+        
         return inputs
             
 

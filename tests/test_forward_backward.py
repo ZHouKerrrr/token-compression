@@ -15,7 +15,7 @@ import torch.nn as nn
 
 from pato_integration.pato_config import PATOQwen2_5_VLConfig, PATOConfig
 from pato_integration.pato_model import PATOQwen2_5_VLModel
-from pato_integration.loss import PATOLoss
+from pato_integration.pato_loss import PATOLoss
 
 
 def test_forward_backward():
