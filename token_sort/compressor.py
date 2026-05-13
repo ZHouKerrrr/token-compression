@@ -45,10 +45,12 @@ class TokenScorer(nn.Module):
         
         return x
 
-EVAL_KEEP_RATIO = {
+LAYER_OF_KEEP_RATIO = {
     0 : 0.5,
     7 : 0.25,
     14 : 0.01,
+    21 : 0.01,
+    25 : 0.00,
 }
 
 @register_token_sort('compressor')
@@ -141,13 +143,12 @@ class Compressor(BaseTokenSorter):
         binary_scores = self.token_scorer(hidden_states) # (B, N, 2)
         keep_prob = F.softmax(binary_scores, dim=-1)
 
-        topk = True
+        topk = False
         if topk:
             keep_prob = keep_prob[:, :, 0] * valid_mask # (B, N)
             mask = torch.zeros_like(keep_prob, device=device, dtype=dtype)
             for i in range(B):
-                length = lengths[i].item()
-                _, indices = torch.topk(keep_prob[i], k=int(length * EVAL_KEEP_RATIO[self.layer_idx]), dim=-1) # (B, K)
+                _, indices = torch.topk(keep_prob[i], k=int(lengths[i] * LAYER_OF_KEEP_RATIO[self.layer_idx]), dim=-1) # (B, K)
                 mask[i].scatter_(0, indices, 1.0)
         else:
             mask = self._gumbel_softmax(binary_scores, hard=True, gumbel_tau=0.0)[:, :, 0]
@@ -163,7 +164,7 @@ class Compressor(BaseTokenSorter):
         if self.training:
             aux_outputs = {
                 'mask': gumbel_mask,
-                'keep_ratio': keep_ratio,
+                'keep_ratio': _keep_ratio,
 
                 # "keep_prob": keep_prob,
                 

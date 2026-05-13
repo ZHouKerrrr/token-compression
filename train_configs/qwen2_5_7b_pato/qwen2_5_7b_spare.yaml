@@ -22,14 +22,14 @@ model_args:
 # loss arguments
 
 lambda_loss:
-  lambda_kd_logits: 2.0
-  lambda_mse_feature: 0.05
-  lambda_distortion: 0.0005
+  lambda_kd_logits: 0.75
+  lambda_mse_feature: 0.0001
+  lambda_distortion: 0.0001
   # lambda_compact: 1e-3
   # lambda_tv: 1e-3
-  lambda_rate: 0.01              # (1e-3)
-  lambda_rate_start: 0.0001
-  temperature_kd: 1.5
+  lambda_rate: 0.25              # (1e-3)
+  lambda_rate_start: 0.0125
+  temperature_kd: 1.0
   temperature_mse: 2.0
   target_rate: 0.5
 

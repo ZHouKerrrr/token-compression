@@ -68,7 +68,8 @@ class RateLoss(nn.Module):
             Rate loss
         """
         ratio = keep_ratio.mean(dim=0)
-        loss = self._log_ratio_loss(ratio, self.target_rate, upper_bound=False)
+        loss = (ratio - self.target_rate).abs().mean()
+        # loss = self._log_ratio_loss(ratio, self.target_rate, upper_bound=False)
         return loss * lambda_rate
 
 class KLLoss(nn.Module):
@@ -132,8 +133,8 @@ class MSELoss(nn.Module):
 
         teacher_feat = teacher_feat.detach()
 
-        student_feat = F.normalize(student_feat.float(), p=2, dim=-1)
-        teacher_feat = F.normalize(teacher_feat.float(), p=2, dim=-1)
+        # student_feat = F.normalize(student_feat.float(), p=2, dim=-1)
+        # teacher_feat = F.normalize(teacher_feat.float(), p=2, dim=-1)
 
         return lambda_mse * self.loss_fct(student_feat, teacher_feat) * (temperature ** 2)
 
