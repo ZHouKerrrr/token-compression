@@ -11,7 +11,7 @@ model_args:
     enable: True
     mode: "compressor"
     prune_depth_ratio:
-     - 0          # target rate: 0.5
+     - 0.00          # target rate: 0.5
     #  - 0.25       # target rate: 0.3
     #  - 0.5      # target rate: 0.1
 # token_sort_mode: Optional["dynamic_token_sorter", "prune_merge_token_sorter"]
@@ -22,16 +22,15 @@ model_args:
 # loss arguments
 
 lambda_loss:
-  lambda_kd_logits: 0.75
-  lambda_mse_feature: 0.0001
-  lambda_distortion: 0.0001
+  lambda_kd_logits: 1.25
+  lambda_mse_feature: 1.25
+  lambda_distortion: 0.000001
   # lambda_compact: 1e-3
   # lambda_tv: 1e-3
-  lambda_rate: 0.25              # (1e-3)
-  lambda_rate_start: 0.0125
-  temperature_kd: 1.0
-  temperature_mse: 2.0
-  target_rate: 0.5
+  lambda_rate: 1.00              # (1e-3)
+  lambda_rate_start: 0.1
+  temperature_kd: 1.5
+  temperature_mse: 1.5
 
 # default training arguments
 gradient_checkpointing: true

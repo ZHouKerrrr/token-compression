@@ -45,12 +45,25 @@ class TokenScorer(nn.Module):
         
         return x
 
-LAYER_OF_KEEP_RATIO = {
+EVAL_PRUNE_STRATEGY = [
+    'topk',
+    'scores',
+    'norm',
+]
+
+TOPK_OF_LAYERS = {
     0 : 0.5,
     7 : 0.25,
     14 : 0.01,
     21 : 0.01,
     25 : 0.00,
+}
+
+SCORES_OF_LAYERS = {
+    0 : 0.5,
+    7 : 0.5,
+    14 : 0.5,
+    21 : 0.5
 }
 
 @register_token_sort('compressor')
@@ -64,16 +77,14 @@ class Compressor(BaseTokenSorter):
         # tau作退火
         self.current_progress = 0.0
         self.tau_start = getattr(self.config, 'tau_start', 1.0)
-        self.tau_end = getattr(self.config, 'tau_end', 0.25)
+        self.tau_end = getattr(self.config, 'tau_end', 0.5)
         
-        self._init_token_scorer()
-        
+        self._init_token_scorer() 
     
     def _apply_freezing(self):
         for param in self.token_scorer.parameters():
             param.requires_grad = False
-            
-            
+               
     def _init_token_scorer(self):
         for m in self.token_scorer.modules():
             if isinstance(m, nn.Linear):
@@ -87,14 +98,12 @@ class Compressor(BaseTokenSorter):
 
             elif isinstance(m, nn.Embedding):
                 nn.init.normal_(m.weight, std=0.02)
-                
-                
+                       
     def _get_current_tau(self):
         p = float(self.current_progress)
         p = max(0.0, min(1.0, p))  # clamp 到 [0, 1]
         tau = self.tau_start + (self.tau_end - self.tau_start) * p
         return tau
-    
     
     def _gumbel_softmax(
         self,
@@ -126,7 +135,6 @@ class Compressor(BaseTokenSorter):
             
         return ret
        
-
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -143,14 +151,19 @@ class Compressor(BaseTokenSorter):
         binary_scores = self.token_scorer(hidden_states) # (B, N, 2)
         keep_prob = F.softmax(binary_scores, dim=-1)
 
-        topk = False
-        if topk:
+        strategy = 'norm'
+        assert strategy in EVAL_PRUNE_STRATEGY, "..."
+        if strategy == 'topk':
             keep_prob = keep_prob[:, :, 0] * valid_mask # (B, N)
             mask = torch.zeros_like(keep_prob, device=device, dtype=dtype)
             for i in range(B):
-                _, indices = torch.topk(keep_prob[i], k=int(lengths[i] * LAYER_OF_KEEP_RATIO[self.layer_idx]), dim=-1) # (B, K)
+                _, indices = torch.topk(keep_prob[i], k=int(lengths[i] * TOPK_OF_LAYERS[self.layer_idx]), dim=-1) # (B, K)
                 mask[i].scatter_(0, indices, 1.0)
-        else:
+        elif strategy == 'scores':
+            mask = keep_prob[:, :, 0] > SCORES_OF_LAYERS[self.layer_idx]
+            mask = mask * valid_mask
+            mask = mask.to(dtype=dtype)
+        elif strategy == 'norm':
             mask = self._gumbel_softmax(binary_scores, hard=True, gumbel_tau=0.0)[:, :, 0]
             mask = mask * valid_mask
             mask = mask.to(dtype=dtype)
@@ -176,7 +189,7 @@ class Compressor(BaseTokenSorter):
                 'keep_ratio': keep_ratio,
                 
                 # 'binary_scores': binary_scores,
-                # "keep_prob": keep_prob,
+                "keep_prob": keep_prob,
                 
                 # '_keep_ratio': _keep_ratio,
             }

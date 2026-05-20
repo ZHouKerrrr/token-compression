@@ -3,7 +3,7 @@
 4. SPARE
 Scoring-based Pruning for Adaptive Representation Efficiency
 强调“评分驱动的稀疏化/效率优化”。
-如果你想要一个更偏系统优化味道的名字，这个不错。
+
 """
 import sys
 import os

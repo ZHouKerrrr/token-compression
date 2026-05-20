@@ -127,11 +127,12 @@ class MSELoss(nn.Module):
         lambda_mse=1.0,
         temperature=2.0,
     ):
+        student_feat = student_feat
+        teacher_feat = teacher_feat.detach()
+
         if valid_mask is not None:
             student_feat = student_feat[valid_mask]
             teacher_feat = teacher_feat[valid_mask]
-
-        teacher_feat = teacher_feat.detach()
 
         # student_feat = F.normalize(student_feat.float(), p=2, dim=-1)
         # teacher_feat = F.normalize(teacher_feat.float(), p=2, dim=-1)
@@ -274,12 +275,12 @@ class SPARELoss(nn.Module):
                     temperature=temperature_kd,
                 )
                 losses['kd_logits_loss'] = kd_logits_loss
-            
+
             if lambda_mse_feature is not None:
                 last_student_hidden = student_hidden[-1]
                 last_teacher_hidden = teacher_hidden[-1]
-                shift_student_feature = last_student_hidden[:, :-1, :].contiguous()
-                shift_teacher_feature = last_teacher_hidden[:, :-1, :].contiguous()
+                shift_student_feature = last_student_hidden[:, :-1, :].float().contiguous()
+                shift_teacher_feature = last_teacher_hidden[:, :-1, :].float().contiguous()
                 kd_feature_loss = self.mse_loss_fct(
                     student_feat=shift_student_feature, 
                     teacher_feat=shift_teacher_feature, 

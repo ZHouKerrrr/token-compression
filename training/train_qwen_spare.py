@@ -267,6 +267,7 @@ class SPARETrainer(Trainer):
                     progress = torch.clamp(torch.tensor(progress, dtype=torch.float32), 0.0, 1.0)
                     lambda_loss = self.lambda_loss.copy()
                     lambda_loss['lambda_rate'] = lambda_loss['lambda_rate_start'] + (lambda_loss['lambda_rate'] -  lambda_loss['lambda_rate_start']) * 0.5 * (1 - torch.cos(torch.pi * progress)) # 0.10 -> 1.00
+                
                 losses = self.spare_loss_fct(
                     inputs=inputs,
                     labels=labels,
